@@ -1,3 +1,4 @@
+using System.Globalization;
 using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.Data;
 using Isas.InterviewService.DTOs;
@@ -31,7 +32,10 @@ public interface IAdminB2CRubricService
     /// <summary>Bộ đang hiệu lực của 1 (nghề, ngôn ngữ). <c>null</c> = chưa có bộ nào (seed chưa apply).</summary>
     Task<AdminRubricResponse?> GetAsync(JobCategory jobCategory, string? language, CancellationToken ct = default);
 
-    /// <summary>Lưu nội dung mới. Không khác gì bản đang chạy ⇒ KHÔNG bump, trả <c>Changed = false</c>.</summary>
+    /// <summary>
+    /// Lưu nội dung mới (RUB1: thêm/xoá/đổi tên/trọng số/phạm vi/mô tả/mốc). Không khác gì bản đang chạy
+    /// ⇒ KHÔNG bump, trả <c>Changed = false</c>. Tiêu chí vắng khỏi body = bị xoá khỏi phiên bản mới.
+    /// </summary>
     Task<AdminRubricResponse?> ReplaceAsync(
         JobCategory jobCategory, UpsertAdminRubricRequest request, string? language, CancellationToken ct = default);
 
@@ -89,46 +93,117 @@ public class AdminB2CRubricService(InterviewDbContext db) : IAdminB2CRubricServi
 
         var inputs = request?.Criteria ?? throw new InvalidOperationException("Thiếu danh sách tiêu chí.");
 
-        // Replace-all NỘI DUNG: phải gửi đủ và đúng tập tiêu chí đang có. Cho gửi thiếu thì tiêu chí
-        // vắng mặt sẽ âm thầm giữ nội dung cũ trong khi admin tin là mình đã xoá mốc của nó.
-        var byId = new Dictionary<Guid, AdminRubricCriterionInput>();
-        foreach (var i in inputs)
+        // RUB1 — admin sửa ĐỦ bộ chuẩn: thêm/xoá/đổi tên/đổi trọng số/đổi phạm vi. Tiêu chí đang có mà
+        // vắng khỏi body = bị XOÁ khỏi phiên bản mới (bản cũ vẫn còn nguyên để chấm nốt các buổi đã ghim).
+        //
+        // ⚠ Hệ quả phải biết (cố ý, không phải lỗi):
+        //   • ĐỔI TÊN — BC12 (điểm yếu → lộ trình), BC15 (đo cải thiện), F14 (mốc so với người khác) đều gom
+        //     theo TÊN ⇒ lịch sử tiến bộ của tiêu chí đó BẮT ĐẦU LẠI từ phiên bản này. Rubric riêng (BC16)
+        //     chép tên cũ cũng thôi kế thừa scope/method theo tên ở lần lưu sau (rơi về Always/Ai + log SC2).
+        //   • THÊM/XOÁ tiêu chí `WhenTargeted` đổi `PracticeService.ComputeSeedCount` (sàn số câu gốc = số
+        //     tiêu chí nội dung) ⇒ buổi mới có nhiều/ít câu gốc hơn và ít/nhiều khe đào sâu hơn.
+        var currentById = current.ToDictionary(c => c.Id);
+        var seenIds = new HashSet<Guid>();
+        var proposed = new List<ProposedCriterion>(inputs.Count);
+
+        for (var index = 0; index < inputs.Count; index++)
         {
-            if (!byId.TryAdd(i.Id, i))
-                throw new InvalidOperationException($"Tiêu chí {i.Id} bị gửi trùng.");
+            var input = inputs[index]
+                ?? throw new InvalidOperationException($"Tiêu chí ở vị trí {index + 1} rỗng.");
+
+            if (input.Id is Guid id)
+            {
+                if (!seenIds.Add(id))
+                    throw new InvalidOperationException($"Tiêu chí {id} bị gửi trùng.");
+                if (!currentById.TryGetValue(id, out var source))
+                    throw new InvalidOperationException(
+                        $"Tiêu chí {id} không thuộc bộ chuẩn đang hiệu lực của {jobCategory} ({lang}).");
+
+                // `null` = GIỮ NGUYÊN (không phải "ghi đè thành rỗng").
+                var name = input.Name is null ? source.Name : NormalizeName(input.Name);
+                var scope = input.ScoringScope is null ? source.ScoringScope : ParseScope(name, input.ScoringScope);
+
+                // Tiêu chí đo bằng SỐ ĐO giọng nói (F11): được giữ/bỏ, được sửa mô tả/trọng số/mốc — nhưng
+                // KHÔNG đổi tên (tên là thứ người luyện đọc để hiểu đó là chỉ số đo, và rubric riêng kế thừa
+                // `ScoringMethod` theo tên) và KHÔNG đổi phạm vi (nó luôn được đo ở mọi câu có ghi âm).
+                if (source.ScoringMethod == CriterionScoringMethod.DeliveryMetrics)
+                {
+                    if (!string.Equals(name, source.Name, StringComparison.Ordinal))
+                        throw new InvalidOperationException(
+                            $"Tiêu chí '{source.Name}' do hệ thống tự đo từ giọng nói — không được đổi tên.");
+                    if (scope != source.ScoringScope)
+                        throw new InvalidOperationException(
+                            $"Tiêu chí '{source.Name}' do hệ thống tự đo từ giọng nói — không được đổi phạm vi chấm.");
+                }
+
+                proposed.Add(new ProposedCriterion(
+                    name, NormalizeDescription(input.Description),
+                    NormalizeWeight(name, input.Weight ?? source.Weight),
+                    source.MaxScore, scope,
+                    // 🔴 Bản mới MANG THEO nguồn điểm của bản cũ — thiếu thì tiêu chí đo-bằng-số-đo âm thầm
+                    // chuyển sang cho LLM chấm (đã xảy ra trên prod 14/09, xem AppendVersionAsync).
+                    source.ScoringMethod,
+                    ValidateLevels(name, source.MaxScore, input.Levels)));
+            }
+            else
+            {
+                // Tiêu chí MỚI: bắt buộc tên + trọng số + phạm vi. Luôn `Ai` + thang 5 (admin không chọn được).
+                var label = $"Tiêu chí mới ở vị trí {index + 1}";
+                if (input.Name is null)
+                    throw new InvalidOperationException($"{label} thiếu tên.");
+                var name = NormalizeName(input.Name);
+                if (input.Weight is null)
+                    throw new InvalidOperationException($"Tiêu chí mới '{name}' thiếu trọng số.");
+                if (input.ScoringScope is null)
+                    throw new InvalidOperationException(
+                        $"Tiêu chí mới '{name}' thiếu phạm vi chấm (Always hoặc WhenTargeted).");
+
+                proposed.Add(new ProposedCriterion(
+                    name, NormalizeDescription(input.Description),
+                    NormalizeWeight(name, input.Weight.Value),
+                    NewCriterionMaxScore, ParseScope(name, input.ScoringScope),
+                    CriterionScoringMethod.Ai,
+                    ValidateLevels(name, NewCriterionMaxScore, input.Levels)));
+            }
         }
 
-        var currentIds = current.Select(c => c.Id).ToHashSet();
-        var unknown = byId.Keys.FirstOrDefault(id => !currentIds.Contains(id));
-        if (unknown != Guid.Empty)
-            throw new InvalidOperationException($"Tiêu chí {unknown} không thuộc bộ chuẩn {jobCategory} ({lang}).");
-        var missing = current.FirstOrDefault(c => !byId.ContainsKey(c.Id));
-        if (missing is not null)
-            throw new InvalidOperationException($"Thiếu tiêu chí '{missing.Name}' trong payload.");
+        // Tên không trùng — trim, KHÔNG phân biệt hoa thường (chặt hơn unique index của DB, vốn phân biệt).
+        var duplicate = proposed
+            .GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(g => g.Count() > 1);
+        if (duplicate is not null)
+            throw new InvalidOperationException(
+                $"Tên tiêu chí '{duplicate.Key}' bị trùng (không phân biệt hoa thường).");
 
-        // Dựng nội dung MỚI: bốn trường ngoài quyền admin chép NGUYÊN từ bản cũ (xem AdminRubricCriterionInput).
-        var proposed = new List<(RubricCriterion Source, string? Description, IReadOnlyList<RubricLevelSnapshot> Levels)>();
-        foreach (var c in current)
-        {
-            var input = byId[c.Id];
-            var levels = ValidateLevels(c.Name, c.MaxScore, input.Levels);
-            proposed.Add((c, string.IsNullOrWhiteSpace(input.Description) ? null : input.Description.Trim(), levels));
-        }
+        // Phải còn ít nhất một tiêu chí do AI chấm: tiêu chí đo-bằng-số-đo bị loại khỏi điểm khi người
+        // luyện nói dưới sàn (DeliveryFluencyScorer) ⇒ bộ chỉ còn nó thì một buổi có thể không có điểm nào.
+        if (!proposed.Any(p => p.Method == CriterionScoringMethod.Ai))
+            throw new InvalidOperationException(
+                "Bộ chuẩn phải còn ít nhất một tiêu chí do AI chấm — tiêu chí hệ thống tự đo không đủ để chấm một buổi.");
+
+        // Σweight trên ĐÚNG giá trị sẽ được lưu (đã làm tròn 4 chữ số — numeric(5,4)) và KHÔNG tự chuẩn
+        // hoá: buổi B2C mới tính điểm CÓ TRỌNG SỐ (INT-10), nên con số admin nhìn thấy phải là con số
+        // dùng để chấm. Kiểm trên giá trị chưa làm tròn thì 7 × (1/7) qua được nhưng lưu ra Σ = 1.0003.
+        var sum = proposed.Sum(p => p.Weight);
+        if (Math.Abs(sum - 1m) > WeightSumTolerance)
+            throw new InvalidOperationException(
+                $"Tổng trọng số phải bằng 1 (hiện {sum.ToString("0.####", CultureInfo.InvariantCulture)}) — "
+                + "hệ thống không tự chuẩn hoá, hãy chỉnh lại trọng số các tiêu chí.");
 
         // KHÔNG bump khi không đổi gì. Vân tay dùng chung với B2B (Isas.Shared) nên hai bên không thể
-        // trả lời khác nhau cho câu "có thật sự đổi thước đo không".
-        var before = RubricFingerprint.Compute(current.OrderBy(c => c.Name, StringComparer.Ordinal)
-            .Select((c, i) => Snapshot(i, c.Name, c.Description, c.Weight, c.MaxScore,
-                c.Levels.OrderBy(l => l.Score).Select(l => new RubricLevelSnapshot(l.Score, l.Descriptor)).ToList())));
-        var after = RubricFingerprint.Compute(proposed.OrderBy(p => p.Source.Name, StringComparer.Ordinal)
-            .Select((p, i) => Snapshot(i, p.Source.Name, p.Description, p.Source.Weight, p.Source.MaxScore, p.Levels)));
+        // trả lời khác nhau cho câu "có thật sự đổi thước đo không". Vân tay gồm tên · mô tả · trọng số ·
+        // thang · PHẠM VI · mốc, và tập tiêu chí (thêm/xoá đổi danh sách) — thiếu phạm vi thì đổi
+        // Always↔WhenTargeted sẽ không bump, mà đó là đổi mẫu số điểm (INT-18).
+        var before = FingerprintOf(current);
+        var after = RubricFingerprint.Compute(proposed.OrderBy(p => p.Name, StringComparer.Ordinal)
+            .Select((p, i) => Snapshot(i, p.Name, p.Description, p.Weight, p.MaxScore, p.Levels, p.Scope)));
 
         if (before == after)
             return Respond(jobCategory, lang, current, changed: false);
 
         var rows = await AppendVersionAsync(jobCategory, lang, current,
-            proposed.Select(p => (p.Source.Name, p.Description, p.Source.Weight, p.Source.MaxScore,
-                                  p.Source.ScoringScope, p.Source.ScoringMethod, p.Levels)).ToList(), ct);
+            proposed.Select(p => (p.Name, p.Description, p.Weight, p.MaxScore, p.Scope, p.Method, p.Levels)).ToList(),
+            ct);
         return Respond(jobCategory, lang, rows, changed: true);
     }
 
@@ -147,11 +222,9 @@ public class AdminB2CRubricService(InterviewDbContext db) : IAdminB2CRubricServi
         if (seed.Count == 0)
             throw new InvalidOperationException($"Không có bộ gốc cho {jobCategory} ({lang}).");
 
-        var before = RubricFingerprint.Compute(current.OrderBy(c => c.Name, StringComparer.Ordinal)
-            .Select((c, i) => Snapshot(i, c.Name, c.Description, c.Weight, c.MaxScore,
-                c.Levels.OrderBy(l => l.Score).Select(l => new RubricLevelSnapshot(l.Score, l.Descriptor)).ToList())));
+        var before = FingerprintOf(current);
         var after = RubricFingerprint.Compute(seed.OrderBy(c => c.Name, StringComparer.Ordinal)
-            .Select((c, i) => Snapshot(i, c.Name, c.Description, c.Weight, c.MaxScore, [])));
+            .Select((c, i) => Snapshot(i, c.Name, c.Description, c.Weight, c.MaxScore, [], c.ScoringScope)));
 
         if (before == after)
             return Respond(jobCategory, lang, current, changed: false);
@@ -238,8 +311,9 @@ public class AdminB2CRubricService(InterviewDbContext db) : IAdminB2CRubricServi
             // 🔴 PHẢI chép: thiếu dòng này thì phiên bản mới rơi về mặc định `Ai`, tức MỘT LẦN admin
             // sửa mốc là tiêu chí chấm-bằng-SỐ-ĐO (Độ trôi chảy) âm thầm chuyển sang cho LLM chấm —
             // trong khi mô tả của chính nó nói ngược lại, và LLM KHÔNG có tín hiệu nào (không cao độ,
-            // không số đo dừng trong prompt) nên nó sẽ bịa. Admin không được phép đổi cột này
-            // (BC-8 chỉ cho sửa mô tả + mốc), nên nó phải đi theo bản cũ chứ không nhận mặc định.
+            // không số đo dừng trong prompt) nên nó sẽ bịa. Admin không đổi được cột này (BC-8/RUB1:
+            // không có trong DTO; tiêu chí mới luôn `Ai`), nên nó phải đi theo bản cũ chứ không nhận
+            // mặc định. Đã xảy ra trên prod 14/09: bản v2 chép tay mất cột này ⇒ "Độ trôi chảy" bị LLM chấm.
             ScoringMethod = x.Method,
             IsActive = true,
             JobCategory = jobCategory,
@@ -259,8 +333,69 @@ public class AdminB2CRubricService(InterviewDbContext db) : IAdminB2CRubricServi
 
     private static RubricCriterionSnapshot Snapshot(
         int orderNo, string name, string? description, decimal weight, int maxScore,
-        IReadOnlyList<RubricLevelSnapshot> levels)
-        => new(orderNo, name, description, weight, maxScore, levels);
+        IReadOnlyList<RubricLevelSnapshot> levels, ScoringScope scope)
+        => new(orderNo, name, description, weight, maxScore, levels, scope.ToString());
+
+    private static string FingerprintOf(IEnumerable<RubricCriterion> criteria)
+        => RubricFingerprint.Compute(criteria.OrderBy(c => c.Name, StringComparer.Ordinal)
+            .Select((c, i) => Snapshot(i, c.Name, c.Description, c.Weight, c.MaxScore,
+                c.Levels.OrderBy(l => l.Score).Select(l => new RubricLevelSnapshot(l.Score, l.Descriptor)).ToList(),
+                c.ScoringScope)));
+
+    /// <summary>Thang cố định của bộ chuẩn B2C (RUB1: admin không đổi được maxScore).</summary>
+    private const int NewCriterionMaxScore = 5;
+
+    /// <summary>Tên tối đa 100 ký tự (cột 128 — chừa đệm; tên dài hơn thì vỡ layout radar/bảng kết quả).</summary>
+    private const int NameMaxLength = 100;
+
+    /// <summary>|Σweight − 1| cho phép — đúng 1 đơn vị của chữ số thứ tư (numeric(5,4)).</summary>
+    private const decimal WeightSumTolerance = 0.0001m;
+
+    private sealed record ProposedCriterion(
+        string Name, string? Description, decimal Weight, int MaxScore, ScoringScope Scope,
+        CriterionScoringMethod Method, IReadOnlyList<RubricLevelSnapshot> Levels);
+
+    private static string NormalizeName(string raw)
+    {
+        var name = raw.Trim();
+        if (name.Length == 0)
+            throw new InvalidOperationException("Tên tiêu chí không được rỗng.");
+        if (name.Length > NameMaxLength)
+            throw new InvalidOperationException(
+                $"Tên tiêu chí '{name[..40]}…' dài {name.Length} ký tự — tối đa {NameMaxLength}.");
+        return name;
+    }
+
+    private static string? NormalizeDescription(string? raw)
+        => string.IsNullOrWhiteSpace(raw) ? null : raw.Trim();
+
+    /// <summary>
+    /// Làm tròn 4 chữ số TRƯỚC khi kiểm — đúng giá trị Postgres sẽ lưu vào numeric(5,4) (làm tròn nửa
+    /// lên, xa số 0). Kiểm trên giá trị thô thì 0.00004 qua được "&gt; 0" rồi lưu ra 0.0000 và nổ CHECK
+    /// <c>ck_rubric_criteria_weight_range</c> ⇒ 500 thay vì 400.
+    /// </summary>
+    private static decimal NormalizeWeight(string name, decimal raw)
+    {
+        var weight = Math.Round(raw, 4, MidpointRounding.AwayFromZero);
+        if (weight <= 0m || weight > 1m)
+            throw new InvalidOperationException(
+                $"Trọng số của '{name}' phải trong khoảng (0, 1] sau khi làm tròn 4 chữ số "
+                + $"(hiện {weight.ToString("0.####", CultureInfo.InvariantCulture)}).");
+        return weight;
+    }
+
+    /// <summary>
+    /// Chỉ nhận đúng TÊN enum. <c>Enum.TryParse</c> trần nhận cả chuỗi số ("0", "7") ⇒ phạm vi rác lọt
+    /// xuống DB và nổ CHECK thành 500.
+    /// </summary>
+    private static ScoringScope ParseScope(string name, string raw)
+        => raw.Trim() switch
+        {
+            var v when v.Equals(nameof(ScoringScope.Always), StringComparison.OrdinalIgnoreCase) => ScoringScope.Always,
+            var v when v.Equals(nameof(ScoringScope.WhenTargeted), StringComparison.OrdinalIgnoreCase) => ScoringScope.WhenTargeted,
+            _ => throw new InvalidOperationException(
+                $"Phạm vi chấm của '{name}' chỉ nhận Always hoặc WhenTargeted (hiện '{raw}').")
+        };
 
     /// <summary>
     /// Kiểm thang điểm bằng luật DÙNG CHUNG (<see cref="CriterionLevelRules"/>), không viết luật thứ hai.
