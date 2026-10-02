@@ -42,6 +42,21 @@ public class PracticeSession : IHasUpdatedAt
     // SessionAbandonSweeper auto-submit (≥1 answer) hoặc SessionAbandoned (0 answer) — chống reservation treo.
     public DateTime? Deadline { get; set; }
 
+    // ATT1 — THỜI LƯỢNG CẢ BUỔI (phút) do HR đặt ở chiến dịch (campaigns.time_limit_minutes),
+    // Campaign gửi kèm lúc tạo session và Interview GHIM lại (cùng mẫu CampaignRubricVersion/SkipPenalty:
+    // dùng cấu hình LÚC TẠO). Đồng hồ KHÔNG chạy từ lúc tạo mà từ lúc VÀO PHÒNG (BegunAt) — xem
+    // SessionTiming.
+    //
+    //   null = buổi KHÔNG tính giờ: mọi buổi B2C · buổi B2B tạo TRƯỚC ATT1 · chiến dịch không khai
+    //          thời lượng. Hành vi y hệt trước ATT1 (không che đề, không cần begin).
+    //   5..180 = buổi tính giờ (CHECK ck_practice_sessions_duration_minutes_range).
+    public int? DurationMinutes { get; set; }
+
+    // ATT1 — mốc VÀO PHÒNG THI (POST /practice/sessions/{id}/begin). Chỉ ghi MỘT lần (ExecuteUpdate
+    // có điều kiện begun_at IS NULL): begin lần hai trả lại đúng giá trị này, không dời đồng hồ.
+    // Buổi tính giờ mà còn null = "chưa vào phòng" ⇒ đề bị che + không nộp/nghe câu được.
+    public DateTime? BegunAt { get; set; }
+
     // BC9 — tổng kết buổi luyện B2C, set khi Scored (campaign_id null); null khi chưa chấm xong / B2B.
     public decimal? OverallScore { get; set; }   // điểm tổng 0–100 (trung bình cộng pct các tiêu chí)
     public int? AnsweredCount { get; set; }        // số câu đã chấm lúc tính kết quả (snapshot)

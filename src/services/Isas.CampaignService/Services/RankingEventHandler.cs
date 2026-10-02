@@ -114,8 +114,23 @@ namespace Isas.CampaignService.Services
                 membership = await _db.CampaignMemberships.FirstOrDefaultAsync(
                     m => m.CampaignId == evt.CampaignId && m.CandidateId == evt.CandidateId, ct);
 
+            if (membership is null)
+                return;
+
+            // ATT1 — membership đã trỏ sang buổi KHÁC (lượt làm lại) ⇒ sự kiện này của lượt CŨ, bỏ qua.
+            // Outbox at-least-once: bản phát lại của lượt 1 đến muộn không được đè trạng thái lượt 2
+            // (đặt Abandoned + xoá deadline của buổi đang chạy). GIỮ fallback (campaign, candidate) ở trên
+            // cho membership cũ có SessionId null — chỉ bỏ qua khi SessionId đã là một buổi khác.
+            if (membership.SessionId is Guid current && current != evt.SessionId)
+            {
+                _logger.LogInformation(
+                    "ATT1: bỏ qua SessionAbandoned của session {EventSessionId} — membership {MembershipId} đã trỏ sang session {CurrentSessionId} (lượt mới).",
+                    evt.SessionId, membership.Id, current);
+                return;
+            }
+
             // Absorbing Completed: delayed abandon events must never erase a scored result.
-            if (membership is null || membership.InterviewStatus == InterviewProgressStatus.Completed)
+            if (membership.InterviewStatus == InterviewProgressStatus.Completed)
                 return;
 
             membership.InterviewStatus = InterviewProgressStatus.Abandoned;
@@ -140,6 +155,17 @@ namespace Isas.CampaignService.Services
 
             if (membership is null || membership.InterviewStatus == InterviewProgressStatus.Completed)
                 return;
+
+            // ATT1 R2 — đối xứng nhánh SessionAbandoned: membership đã trỏ sang buổi KHÁC (lượt mới) ⇒ sự
+            // kiện chấm xong này của buổi CŨ đến muộn, KHÔNG được đánh Completed lượt đang chạy. Dòng
+            // ranking của buổi cũ vẫn upsert như thường (đường ranking không đụng).
+            if (membership.SessionId is Guid current && current != evt.SessionId)
+            {
+                _logger.LogInformation(
+                    "ATT1: bỏ qua đánh Completed từ SessionScored của session {EventSessionId} — membership {MembershipId} đã trỏ sang session {CurrentSessionId} (lượt mới).",
+                    evt.SessionId, membership.Id, current);
+                return;
+            }
 
             membership.InterviewStatus = InterviewProgressStatus.Completed;
             membership.SessionId ??= evt.SessionId;

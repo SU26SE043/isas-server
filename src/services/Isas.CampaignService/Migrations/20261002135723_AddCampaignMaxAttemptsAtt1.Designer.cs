@@ -3,6 +3,7 @@ using System;
 using Isas.CampaignService.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Isas.CampaignService.Migrations
 {
     [DbContext(typeof(CampaignDbContext))]
-    partial class CampaignDbContextModelSnapshot : ModelSnapshot
+    [Migration("20261002135723_AddCampaignMaxAttemptsAtt1")]
+    partial class AddCampaignMaxAttemptsAtt1
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -595,12 +598,6 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnName("id")
                         .HasDefaultValueSql("gen_random_uuid()");
 
-                    b.Property<int>("AttemptCount")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
-                        .HasDefaultValue(0)
-                        .HasColumnName("attempt_count");
-
                     b.Property<Guid>("CampaignId")
                         .HasColumnType("uuid")
                         .HasColumnName("campaign_id");
@@ -707,8 +704,6 @@ namespace Isas.CampaignService.Migrations
 
                     b.ToTable("campaign_membership", null, t =>
                         {
-                            t.HasCheckConstraint("ck_campaign_membership_attempt_count_non_negative", "attempt_count >= 0");
-
                             t.HasCheckConstraint("ck_campaign_membership_interview_status", "interview_status IS NULL OR interview_status IN ('NotStarted', 'InProgress', 'Abandoned', 'Completed')");
 
                             t.HasCheckConstraint("ck_campaign_membership_status", "status IN ('Joined')");

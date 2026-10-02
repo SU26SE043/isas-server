@@ -46,6 +46,26 @@ namespace Isas.CampaignService.Services
         public CampaignInterviewCapacityExceededException(string message) : base(message) { }
     }
 
+    /// <summary>
+    /// ATT1 [C8] — 409: ứng viên đã dùng hết số lượt làm bài của chiến dịch (và không phải đang làm dở).
+    /// Controller trả body <c>{ code: "ATTEMPT_LIMIT_REACHED", error, attemptsUsed, maxAttempts }</c>.
+    /// Ném TRƯỚC khung giờ / sức chứa / gọi Interview ⇒ không giữ credit tổ chức nào rồi mới 409 (PAY-5).
+    /// KHÔNG dẫn xuất <see cref="InvalidOperationException"/> (controller map loại đó → 409 không code).
+    /// </summary>
+    public class AttemptLimitReachedException : Exception
+    {
+        public const string Code = "ATTEMPT_LIMIT_REACHED";
+        public int AttemptsUsed { get; }
+        public int MaxAttempts { get; }
+
+        public AttemptLimitReachedException(int attemptsUsed, int maxAttempts)
+            : base($"Bạn đã dùng hết {maxAttempts} lượt làm bài của chiến dịch này (đã dùng {attemptsUsed}).")
+        {
+            AttemptsUsed = attemptsUsed;
+            MaxAttempts = maxAttempts;
+        }
+    }
+
     /// <summary>409 — ứng viên bắt đầu mới ngoài khoảng thời gian slot đã được phân.</summary>
     public class OutsideSlotWindowException : Exception
     {

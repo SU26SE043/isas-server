@@ -64,6 +64,13 @@ namespace Isas.CampaignService.DTOs
         public DateTime? Deadline { get; set; }
         public string MembershipStatus { get; set; } = null!;      // "Joined"
         public string InterviewStatus { get; set; } = null!;       // NotStarted/InProgress/Completed
+
+        // ATT1 [C6] — luật số lượt + thời lượng. InterviewStatus GIỮ NGUYÊN giá trị cũ (FE cũ đang đọc;
+        // Abandoned vẫn hiện NotStarted) — thông tin "lượt trước bỏ ngang" đi bằng field mới.
+        public int? TimeLimitMinutes { get; set; }
+        public int MaxAttempts { get; set; } = 1;
+        public int AttemptsUsed { get; set; }
+        public bool LastAttemptAbandoned { get; set; }
     }
 
     /// <summary>GET /my-campaigns/{id} — chi tiết campaign cho ứng viên đã join (JD/criteria/deadline + đã start chưa).</summary>
@@ -79,6 +86,13 @@ namespace Isas.CampaignService.DTOs
         public string InterviewStatus { get; set; } = null!;
         public Guid? SessionId { get; set; }
         public bool Started { get; set; }
+
+        // ATT1 [C6] — luật số lượt + thời lượng. InterviewStatus GIỮ NGUYÊN giá trị cũ (FE cũ đang đọc;
+        // Abandoned vẫn hiện NotStarted) — thông tin "lượt trước bỏ ngang" đi bằng field mới.
+        public int? TimeLimitMinutes { get; set; }
+        public int MaxAttempts { get; set; } = 1;
+        public int AttemptsUsed { get; set; }
+        public bool LastAttemptAbandoned { get; set; }
     }
 
     /// <summary>POST /campaign/{id}/start — bắt đầu phỏng vấn (create-or-get session Interview).</summary>
@@ -86,8 +100,14 @@ namespace Isas.CampaignService.DTOs
     {
         public Guid SessionId { get; set; }
         public Guid CampaignId { get; set; }
+        // Hạn CỨNG (hết hạn chiến dịch / khung giờ) — KHÔNG dùng để đếm giờ thi (đồng hồ chạy từ begin).
         public DateTime? DeadlineAt { get; set; }
+        // ATT1 [C7] — content của từng câu LUÔN rỗng: đề chỉ lộ sau "vào phòng" (begin bên Interview).
+        // Giữ id/orderNo/timeLimitSec để FE dựng marker phòng thi.
         public List<StartQuestionItem> Questions { get; set; } = new();
+        // ATT1 [C7] — lượt làm bài của buổi này (1-based) + thời lượng cả buổi (null = không tính giờ).
+        public int AttemptNo { get; set; }
+        public int? TimeLimitMinutes { get; set; }
         // SEC-1: campaign bật giám sát chống gian lận → FE kích hoạt proctoring (tab-switch/paste/focus + webcam).
         // Độc lập với face-verify: có thể bật anti-cheat mà không bật face-verify.
         public bool AntiCheatEnabled { get; set; }

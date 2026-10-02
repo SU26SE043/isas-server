@@ -192,7 +192,12 @@ namespace Isas.CampaignService.Services
                 JobTitle = m.Campaign.Domain,
                 Deadline = m.Campaign.ExpiresAt,
                 MembershipStatus = m.Status.ToString(),
-                InterviewStatus = MapCandidateInterviewStatus(m.InterviewStatus).ToString()
+                InterviewStatus = MapCandidateInterviewStatus(m.InterviewStatus).ToString(),
+                // ATT1 [C6]
+                TimeLimitMinutes = m.Campaign.TimeLimitMinutes,
+                MaxAttempts = m.Campaign.MaxAttempts,
+                AttemptsUsed = m.AttemptCount,
+                LastAttemptAbandoned = m.InterviewStatus == InterviewProgressStatus.Abandoned
             }).ToList();
 
             return new KeysetPage<MyCampaignItem>(items, next);
@@ -223,7 +228,12 @@ namespace Isas.CampaignService.Services
                 MembershipStatus = membership.Status.ToString(),
                 InterviewStatus = interviewStatus.ToString(),
                 SessionId = membership.SessionId,
-                Started = membership.SessionId is not null || interviewStatus != InterviewProgressStatus.NotStarted
+                Started = membership.SessionId is not null || interviewStatus != InterviewProgressStatus.NotStarted,
+                // ATT1 [C6]
+                TimeLimitMinutes = membership.Campaign.TimeLimitMinutes,
+                MaxAttempts = membership.Campaign.MaxAttempts,
+                AttemptsUsed = membership.AttemptCount,
+                LastAttemptAbandoned = membership.InterviewStatus == InterviewProgressStatus.Abandoned
             };
         }
 
@@ -258,6 +268,44 @@ namespace Isas.CampaignService.Services
             var now = DateTime.UtcNow;
             var isResume = membership.SessionId is not null
                 && membership.InterviewStatus == InterviewProgressStatus.InProgress;
+
+            // ATT1 R1 — membership "InProgress" chỉ là điều Campaign BIẾT LẦN CUỐI: sự kiện kết thúc buổi
+            // (SessionScored / SessionAbandoned) đi qua outbox → broker nên có thể chưa tới (~15s, broker
+            // chết thì lâu hơn). Tin mù vào đó thì guard lượt bị bỏ qua, Interview thấy buổi cũ đã đóng ⇒
+            // tạo buổi MỚI + giữ credit ⇒ vượt trần lượt, và buổi mới rút đề lượt cũ. Nên khi tưởng là
+            // "vào lại", HỎI trạng thái thật bên Interview. CHỈ hỏi ở nhánh này: Start lần đầu / lượt sau bỏ
+            // ngang không thêm round-trip. Lỗi gọi ⇒ DownstreamServiceException (502) — fail-closed, không đoán.
+            // ⚠ Còn cửa sổ đua CỰC HẸP giữa lúc hỏi và lúc create-or-get (buổi đóng đúng khoảng giữa) —
+            // chấp nhận: khi đó vẫn đếm đúng buổi mới (isNewSession), chỉ có thể vượt trần một lượt.
+            if (isResume)
+            {
+                var live = await _sessionClient.GetSessionStateAsync(membership.SessionId!.Value, ct);
+                switch (ClassifyLiveSession(live))
+                {
+                    case LiveSessionVerdict.Submitted:
+                        // Bài đã nộp/chấm bên Interview ⇒ đối xử như guard Completed ở trên (không làm lại
+                        // bài đã nộp, kể cả khi còn lượt — guard Completed đứng trước guard lượt).
+                        throw new InvalidOperationException("Bạn đã hoàn thành phỏng vấn của chiến dịch này.");
+                    case LiveSessionVerdict.Ended:
+                        // Buổi đã bỏ ngang / hỏng / không tồn tại ⇒ KHÔNG phải vào lại: guard lượt áp, còn
+                        // lượt thì là lượt mới (attemptNo = count + 1, đề mới).
+                        _logger.LogInformation(
+                            "ATT1: membership {MembershipId} còn InProgress nhưng Interview báo session {SessionId} {Status} — coi là KHÔNG vào lại.",
+                            membership.Id, membership.SessionId, live?.Exists == false ? "không tồn tại" : live?.Status);
+                        isResume = false;
+                        break;
+                }
+            }
+
+            // ATT1 [C8] — hết lượt làm bài (và không phải đang làm dở) ⇒ 409 ATTEMPT_LIMIT_REACHED. Đứng
+            // TRƯỚC khung giờ / sức chứa / gọi Interview: hết lượt mà vẫn đi tiếp là Interview giữ 1
+            // credit tổ chức rồi mới 409 (PAY-5). Vào lại buổi đang dở KHÔNG bị chặn (không tạo lượt mới).
+            if (!isResume && membership.AttemptCount >= campaign.MaxAttempts)
+                throw new AttemptLimitReachedException(membership.AttemptCount, campaign.MaxAttempts);
+
+            // ATT1 — lượt của buổi SẮP dùng: vào lại = lượt đang dở; buổi mới = lượt kế. Chỉ dùng để chọn
+            // đề + trả về cho FE; bộ đếm CHỈ tăng sau khi Interview trả về session mới (xem dưới).
+            var attemptNo = isResume ? membership.AttemptCount : membership.AttemptCount + 1;
             DateTime? interviewDeadline = campaign.ExpiresAt;
 
             // Resume đã có session idempotent, không chiếm thêm slot/capacity và không gọi lại reserve.
@@ -315,10 +363,12 @@ namespace Isas.CampaignService.Services
             if (pool.Count == 0)
                 throw new InvalidOperationException("Chiến dịch chưa có câu hỏi.");
 
+            // ATT1 — lượt ≥ 2 rút bộ câu gốc MỚI; lượt 1 rút ĐÚNG đề như trước ATT1 (hạt giống không đổi).
             var selected = QuestionPoolSelector.Select(
                 pool, campaign.QuestionsPerSession, campaignId, candidateId,
                 warning => _logger.LogWarning(
-                    "Ngân hàng đề campaign {CampaignId}: {Warning}", campaignId, warning));
+                    "Ngân hàng đề campaign {CampaignId}: {Warning}", campaignId, warning),
+                attemptNo: attemptNo);
 
             var questions = selected.Select(q => q.Text).ToList();
             // Cùng danh sách, cùng thứ tự — Interview ghép theo chỉ số và BỎ QUA nếu số lượng lệch.
@@ -359,10 +409,18 @@ namespace Isas.CampaignService.Services
             // Gửi deadline hiệu lực (min campaign expiry và slot) để Interview sweeper tự kết thúc đúng hạn.
             var session = campaign.Language == "vi"
                 ? await _sessionClient.CreateOrGetSessionAsync(candidateId, campaignId, campaign.OrgId, jobCategory, questions, criteria, interviewDeadline,
-                    campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, campaign.MaxDeepPerQuestion, campaign.Seniority, campaign.RubricVersion, questionDetails, scoringPolicy, campaign.SkipPenalty, ct)
+                    campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, campaign.MaxDeepPerQuestion, campaign.Seniority, campaign.RubricVersion, questionDetails, scoringPolicy, campaign.SkipPenalty, campaign.TimeLimitMinutes, ct)
                 : await _sessionClient.CreateOrGetSessionAsync(candidateId, campaignId, campaign.OrgId, jobCategory, questions, criteria, interviewDeadline,
-                    campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, campaign.MaxDeepPerQuestion, campaign.Language, campaign.Seniority, campaign.RubricVersion, questionDetails, scoringPolicy, campaign.SkipPenalty, ct);
+                    campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, campaign.MaxDeepPerQuestion, campaign.Language, campaign.Seniority, campaign.RubricVersion, questionDetails, scoringPolicy, campaign.SkipPenalty, campaign.TimeLimitMinutes, ct);
 
+            // ATT1 — đếm lượt CHỈ khi Interview trả về buổi KHÁC buổi membership đang giữ (= buổi MỚI).
+            // Vào lại / gọi trùng ra cùng session ⇒ không tăng. Start ném trước dòng này (402/429/502/lỗi
+            // sinh câu hỏi) ⇒ chưa có buổi nào ⇒ không tăng. Cùng SaveChanges với SessionId mới bên dưới:
+            // không có cửa sổ ghi SessionId mới mà quên đếm. (Hai request song song cùng ra một session
+            // mới đều gán CÙNG giá trị tuyệt đối AttemptCount + 1 ⇒ không đếm đôi.)
+            var isNewSession = membership.SessionId != session.SessionId;
+            if (isNewSession)
+                membership.AttemptCount += 1;
             membership.SessionId = session.SessionId;
             // Deadline được chốt lần start đầu; HR đổi slot sau đó không được hồi tố session đang chạy.
             membership.InterviewDeadlineAt ??= interviewDeadline;
@@ -395,15 +453,44 @@ namespace Isas.CampaignService.Services
                     && string.IsNullOrWhiteSpace(membership.ReferenceImageKey),
                 // INT-17: FE dùng cờ này để biết bài có đuôi thích ứng (append nextQuestion sau seed cuối).
                 AdaptiveEnabled = campaign.AdaptiveEnabled,
+                // ATT1 [C7] — lượt của buổi này (sau khi đếm) + thời lượng cả buổi (null = không tính giờ).
+                // R3 — tối thiểu 1: buổi bắt đầu trong cửa sổ "đã migrate, chưa deploy code" mang
+                // attempt_count 0 (dữ liệu sửa bằng chạy lại backfill); hạt giống KHÔNG đổi (≤ 1 vẫn 32 byte).
+                AttemptNo = Math.Max(1, membership.AttemptCount),
+                TimeLimitMinutes = campaign.TimeLimitMinutes,
+                // ATT1 [C7] — đề chỉ lộ sau "vào phòng" (begin bên Interview). Start KHÔNG trả nội dung câu;
+                // giữ id/orderNo/timeLimitSec để FE dựng marker phòng thi.
                 Questions = session.Questions
                     .OrderBy(q => q.OrderNo)
                     .Select(q => new StartQuestionItem
                     {
                         Id = q.Id,
                         OrderNo = q.OrderNo,
-                        Content = q.Content,
+                        Content = string.Empty,
                         TimeLimitSec = q.TimeLimitSec
                     }).ToList()
+            };
+        }
+
+        // ATT1 R1 — phân loại trạng thái THẬT của buổi đang giữ (tên enum SessionStatus phía Interview).
+        private enum LiveSessionVerdict { Resume, Submitted, Ended }
+
+        private static LiveSessionVerdict ClassifyLiveSession(CampaignSessionState? live)
+        {
+            // Client thật không bao giờ trả null (lỗi ⇒ ném). null chỉ đến từ test double ⇒ giữ hành vi cũ.
+            if (live is null)
+                return LiveSessionVerdict.Resume;
+            if (!live.Exists)
+                return LiveSessionVerdict.Ended;
+            return live.Status switch
+            {
+                var st when string.Equals(st, "Scored", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(st, "Completed", StringComparison.OrdinalIgnoreCase) => LiveSessionVerdict.Submitted,
+                var st when string.Equals(st, "SessionAbandoned", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(st, "Failed", StringComparison.OrdinalIgnoreCase) => LiveSessionVerdict.Ended,
+                // GeneratingQuestions / Ready / InProgress / Scoring / không rõ (Interview cũ không trả states)
+                // ⇒ vào lại như trước.
+                _ => LiveSessionVerdict.Resume,
             };
         }
 

@@ -124,6 +124,9 @@ namespace Isas.CampaignService.Services
             var seniority = ValidateSeniority(request.Seniority);
             ValidateConcurrencyCap(request.MaxConcurrentInterviews);
             ValidateQuestionsPerSession(request.QuestionsPerSession);
+            // ATT1 — hai tham số luật thi: kiểm TRƯỚC khi dựng entity (400, không để lại gì nửa vời).
+            ValidateMaxAttempts(request.MaxAttempts);
+            ValidateTimeLimitMinutes(request.TimeLimitMinutes);
 
             // C11 + cap độ dài: chuẩn hoá & kiểm ngưỡng TRƯỚC khi dựng entity/ghi DB → vượt ngưỡng thì
             // 400 mà không để lại gì nửa vời.
@@ -147,6 +150,7 @@ namespace Isas.CampaignService.Services
                 Status = CampaignStatus.Draft,
                 MaxCandidates = request.MaxCandidates,
                 TimeLimitMinutes = request.TimeLimitMinutes,
+                MaxAttempts = request.MaxAttempts ?? MinAttempts,   // ATT1: vắng = 1 lượt (hành vi trước ATT1)
                 AntiCheatEnabled = request.AntiCheatEnabled,
                 AdaptiveEnabled = request.AdaptiveEnabled,   // INT-17: HR bật thích ứng cho campaign
                 GroundingEnabled = request.GroundingEnabled,
@@ -520,8 +524,39 @@ namespace Isas.CampaignService.Services
             if (request.MaxCandidates.HasValue)
                 campaign.MaxCandidates = request.MaxCandidates;
 
-            if (request.TimeLimitMinutes.HasValue)
-                campaign.TimeLimitMinutes = request.TimeLimitMinutes;
+            // ATT1 — thời lượng là giờ SERVER đóng bài (trước ATT1 chỉ in vào email) ⇒ luật như mọi tham số
+            // đổi luật thi (mẫu questions_per_session): CHỈ khi giá trị THỰC SỰ ĐỔI mới validate + khoá.
+            // Gửi lại đúng giá trị đang lưu = no-op — wizard echo cả form (CMP4-B2 cd15cd5); và KHÔNG
+            // validate bản echo: chiến dịch có thời lượng cũ ngoài dải mà đã Active (không đổi được nữa)
+            // sẽ ăn 400 ở MỌI lần Lưu — kẹt cứng. Bản nháp giữ giá trị cũ ngoài dải thì publish chặn (C4).
+            if (request.TimeLimitMinutes is int newTimeLimit && newTimeLimit != campaign.TimeLimitMinutes)
+            {
+                ValidateTimeLimitMinutes(newTimeLimit);
+                if (campaign.Status != CampaignStatus.Draft)
+                    throw CampaignSettingLockedException.TimeLimitLocked(
+                        campaign.Status.ToString(), campaign.TimeLimitMinutes, newTimeLimit);
+                campaign.TimeLimitMinutes = newTimeLimit;
+            }
+
+            // ATT1 — số lượt làm bài: validate dải TRƯỚC khi so (BK35 — giá trị rác vẫn 400 kể cả trùng).
+            //   • Draft: tự do trong [1, 3].
+            //   • Active: chỉ TĂNG (áp cho mọi ứng viên, kể cả người đã hết lượt — cách cứu ca hệ thống chấm
+            //     lỗi). GIẢM ⇒ 409 MAX_ATTEMPTS_DECREASE: người đang được hứa làm lại sẽ bị chặn ngược.
+            //   • Closed/Archived: đổi giá trị ⇒ 409 (luật thi của cuộc tuyển đã đóng là dữ liệu lịch sử).
+            //   Gửi lại đúng giá trị đang lưu ở MỌI trạng thái = no-op.
+            if (request.MaxAttempts is int newMaxAttempts)
+            {
+                ValidateMaxAttempts(newMaxAttempts);
+                if (newMaxAttempts != campaign.MaxAttempts)
+                {
+                    if (campaign.Status is CampaignStatus.Closed or CampaignStatus.Archived)
+                        throw new InvalidOperationException(
+                            $"Không đổi được số lượt làm bài khi campaign {campaign.Status}.");
+                    if (campaign.Status == CampaignStatus.Active && newMaxAttempts < campaign.MaxAttempts)
+                        throw CampaignSettingLockedException.MaxAttemptsDecrease(campaign.MaxAttempts, newMaxAttempts);
+                    campaign.MaxAttempts = newMaxAttempts;
+                }
+            }
 
             if (request.AntiCheatEnabled.HasValue)
                 campaign.AntiCheatEnabled = request.AntiCheatEnabled.Value;
@@ -1478,6 +1513,15 @@ namespace Isas.CampaignService.Services
 
             if (campaign.Status != CampaignStatus.Draft)
                 throw new InvalidOperationException($"Chỉ publish được campaign `Draft` (hiện: {campaign.Status}).");
+
+            // ATT1 [C4] — thời lượng là giờ server đóng bài ⇒ chiến dịch lên sóng PHẢI có nó, trong [5, 180].
+            // Nháp cũ có thể còn null/0/−30/100000 (create/update trước ATT1 gán thẳng, không CHECK DB).
+            // Kiểm TRƯỚC mọi lời gọi AI bên dưới (BuildCriteriaAsync / BuildJobNeedsAsync) — 400 không
+            // được đốt token.
+            if (campaign.TimeLimitMinutes is null)
+                throw new ArgumentException(
+                    $"Phải đặt thời lượng bài thi ({MinTimeLimitMinutes}–{MaxTimeLimitMinutes} phút) trước khi triển khai.");
+            ValidateTimeLimitMinutes(campaign.TimeLimitMinutes);
 
             await EnsureCanCreateCampaignAsync(orgId, await ResolveEntitlementAsync(orgId, ct), ct);
 
@@ -3271,6 +3315,29 @@ namespace Isas.CampaignService.Services
                 throw new ArgumentException(
                     $"questions_per_session phải trong [1, {MaxQuestionsPerSession}] (hiện: {n}). "
                     + "Bỏ trống (create) / gửi 0 (PUT) = ứng viên thi hết bộ câu hỏi.");
+        }
+
+        // ATT1 — số lượt làm bài tối đa mỗi ứng viên. Khớp CHECK ck_campaigns_max_attempts_range ở DB.
+        internal const int MinAttempts = 1;
+        internal const int MaxAttemptsCap = 3;
+
+        // ATT1 — thời lượng cả buổi (phút). KHÔNG có CHECK DB tương ứng (dev còn nháp 0/−30/100000 ⇒
+        // migration sẽ nổ) — luật chỉ ở tầng ứng dụng: create, update (khi giá trị đổi) và publish.
+        internal const int MinTimeLimitMinutes = 5;
+        internal const int MaxTimeLimitMinutes = 180;
+
+        private static void ValidateMaxAttempts(int? maxAttempts)
+        {
+            if (maxAttempts is int n && (n < MinAttempts || n > MaxAttemptsCap))
+                throw new ArgumentException(
+                    $"max_attempts phải trong [{MinAttempts}, {MaxAttemptsCap}] (hiện: {n}).");
+        }
+
+        private static void ValidateTimeLimitMinutes(int? timeLimitMinutes)
+        {
+            if (timeLimitMinutes is int n && (n < MinTimeLimitMinutes || n > MaxTimeLimitMinutes))
+                throw new ArgumentException(
+                    $"time_limit_minutes phải trong [{MinTimeLimitMinutes}, {MaxTimeLimitMinutes}] phút (hiện: {n}).");
         }
 
         // EVA1-B5 / HĐ-2 — trần số năm KN hợp lý cho luật lọc cứng. > 60 gần như chắc chắn là gõ nhầm.

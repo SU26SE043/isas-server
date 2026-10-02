@@ -100,6 +100,13 @@ public class AnswersController : ControllerBase   // KHÔNG [Route] cấp class
         {
             return Forbid();
         }
+        catch (SessionTimingConflictException ex)
+        {
+            // ATT1 · [I3] — SESSION_NOT_BEGUN / SESSION_TIME_UP: 409 CÓ MÃ. Đứng TRƯỚC catch
+            // InvalidOperationException (và không kế thừa nó) để client phân biệt được "chưa vào phòng"
+            // với "hết giờ" với "buổi đã kết thúc" (409 không mã bên dưới).
+            return Conflict(new { code = ex.Code, error = ex.Message });
+        }
         catch (InvalidOperationException ex)
         {
             return Conflict(new { error = ex.Message });

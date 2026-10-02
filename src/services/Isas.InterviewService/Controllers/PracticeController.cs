@@ -202,6 +202,37 @@ public class PracticeController : ControllerBase
     }
 
     /// <summary>
+    /// ATT1 · [I1] — VÀO PHÒNG THI: đồng hồ cả buổi bắt đầu chạy (chỉ buổi B2B tính giờ). Không body.
+    /// Gọi lại trả CÙNG beganAt/deadline. Buổi không tính giờ (B2C / B2B trước ATT1) → 200 với
+    /// beganAt = null, durationMinutes = null, deadline = giá trị đang có.
+    /// </summary>
+    [HttpPost("{sessionId:guid}/begin")]
+    [ProducesResponseType(typeof(BeginSessionResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> BeginSession(Guid sessionId, CancellationToken ct)
+    {
+        try
+        {
+            return Ok(await _practiceService.BeginSessionAsync(GetCandidateId(), sessionId, ct));
+        }
+        catch (KeyNotFoundException)
+        {
+            // Cùng câu với GET session — hai endpoint cùng đối tượng, cùng nghĩa 404.
+            return NotFound(new { error = "Không tìm thấy phiên phỏng vấn này." });
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message });
+        }
+        catch (SessionTimingConflictException ex)
+        {
+            return Conflict(new { code = ex.Code, error = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// Ghi một tín hiệu mất tập trung của buổi luyện (coaching — xem FocusSignals).
     /// 204 kể cả khi không lưu gì (buổi tắt theo dõi / B2B / đã kết thúc / chạm trần): đó là các ca
     /// "không áp dụng", không phải lỗi của client.
@@ -337,6 +368,12 @@ public class PracticeController : ControllerBase
         {
             // INT-11 — không phải buổi của mình (khớp tiền lệ GetSession).
             return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message });
+        }
+        catch (SessionTimingConflictException ex)
+        {
+            // ATT1 · [I4] — buổi tính giờ chưa vào phòng: đọc đề thành tiếng là lộ đề trước begin.
+            // Bắt TƯỜNG MINH ở đây: action này không có catch-all, ném lọt ra là 500.
+            return Conflict(new { code = ex.Code, error = ex.Message });
         }
         catch (AiServiceException ex)
         {

@@ -127,11 +127,11 @@ public class SkipPenaltyRnk1Tests
                 It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(),
                 It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<int>(),
                 It.IsAny<IReadOnlyList<SessionQuestionInput>?>(), It.IsAny<CampaignScoringPolicyInput?>(),
-                It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+                It.IsAny<bool>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
             .Callback((Guid _, Guid _, Guid _, string _, IReadOnlyList<string> _,
                     IReadOnlyList<SessionCriterionInput> _, DateTime? _, bool? _, int? _, int? _,
                     int? _, string _, int _, IReadOnlyList<SessionQuestionInput>? _,
-                    CampaignScoringPolicyInput? _, bool sp, CancellationToken _) => { captured = sp; })
+                    CampaignScoringPolicyInput? _, bool sp, int? _, CancellationToken _) => { captured = sp; })
             .ReturnsAsync(new CampaignSessionResult(Guid.NewGuid(), new List<SessionQuestion>()));
 
         var svc = new ParticipationService(

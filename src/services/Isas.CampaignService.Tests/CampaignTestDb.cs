@@ -60,6 +60,10 @@ public sealed class CampaignTestDb : IDisposable
             Title = "Test Campaign",
             Status = status,
             AntiCheatEnabled = antiCheat,
+            // ATT1 [C4] — publish đòi thời lượng ∈ [5, 180]. Seed theo đúng hình dạng campaign THẬT: POST
+            // /campaign có [Required] TimeLimitMinutes và prod không có dòng NULL nào. Test cần ca null /
+            // ngoài dải thì tự đặt tường minh.
+            TimeLimitMinutes = 30,
             StartsAt = DateTime.UtcNow,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow

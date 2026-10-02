@@ -36,6 +36,10 @@ namespace Isas.CampaignService.Models
         // (membership có trước migration). B3 dùng làm điểm neo đối chiếu nhịp face_images.captured_at —
         // client ngừng gửi thì captured_at ngừng tiến, mốc này thì không, nên server thấy được khoảng lặng.
         public DateTime? InterviewStartedAt { get; set; }
+        // ATT1 — số LƯỢT làm bài đã dùng. Một lượt = một lần Start tạo ra buổi thi MỚI (Interview trả về
+        // session KHÁC session membership đang giữ). Vào lại buổi đang dở / gọi trùng KHÔNG tính; Start
+        // ném trước khi có buổi (402/429/502/lỗi sinh câu hỏi) KHÔNG tính. So với campaigns.max_attempts.
+        public int AttemptCount { get; set; }
         // SEC-2/DATA-2: ảnh tham chiếu face-verify — 1 bản/ứng viên/campaign. Lưu S3 KEY (không ảnh trong DB), null tới khi có.
         public string? ReferenceImageKey { get; set; }
 

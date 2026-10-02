@@ -124,8 +124,12 @@ namespace Isas.CampaignService.DTOs
 
         public int? MaxCandidates { get; set; }
 
+        // ATT1 — thời lượng cả buổi, ∈ [5, 180] phút (ngoài dải → 400). Server đóng bài theo số này.
         [Required]
         public int? TimeLimitMinutes { get; set; }
+
+        // ATT1 — số lượt làm bài tối đa mỗi ứng viên, ∈ [1, 3]. Vắng/null = 1 (hành vi trước ATT1).
+        public int? MaxAttempts { get; set; }
 
         public bool AntiCheatEnabled { get; set; }
 
@@ -194,7 +198,13 @@ namespace Isas.CampaignService.DTOs
 
         public int? MaxCandidates { get; set; }
 
+        // ATT1 — null = KHÔNG ĐỔI. Khác giá trị đang lưu khi không còn Draft → 409 TIME_LIMIT_LOCKED;
+        // gửi lại ĐÚNG giá trị đang lưu (wizard echo cả form) = no-op, không 409.
         public int? TimeLimitMinutes { get; set; }
+
+        // ATT1 — null = KHÔNG ĐỔI. Draft: [1, 3] tự do. Active: chỉ TĂNG (giảm → 409
+        // MAX_ATTEMPTS_DECREASE). Closed/Archived: đổi giá trị → 409.
+        public int? MaxAttempts { get; set; }
 
         public bool? AntiCheatEnabled { get; set; }
 
@@ -546,6 +556,7 @@ namespace Isas.CampaignService.DTOs
         public string Status { get; set; }
         public int? MaxCandidates { get; set; }
         public int? TimeLimitMinutes { get; set; }
+        public int MaxAttempts { get; set; } = 1;   // ATT1 — số lượt làm bài tối đa mỗi ứng viên (1–3)
         public bool AntiCheatEnabled { get; set; }
         public bool FaceVerifyEnabled { get; set; }   // SEC-1: bật face-verify (B2B-only)
         public int? PassScorePct { get; set; }   // E5: ngưỡng % pass/fail (null = HR quyết tay)
@@ -619,6 +630,7 @@ namespace Isas.CampaignService.DTOs
             Status = c.Status.ToString(),
             MaxCandidates = c.MaxCandidates,
             TimeLimitMinutes = c.TimeLimitMinutes,
+            MaxAttempts = c.MaxAttempts,   // ATT1
             AntiCheatEnabled = c.AntiCheatEnabled,
             FaceVerifyEnabled = c.FaceVerifyEnabled,
             PassScorePct = c.PassScorePct,
@@ -731,6 +743,7 @@ namespace Isas.CampaignService.DTOs
         public string Status { get; set; } = null!;
         public int? MaxCandidates { get; set; }
         public int? TimeLimitMinutes { get; set; }
+        public int MaxAttempts { get; set; } = 1;   // ATT1
         public bool AntiCheatEnabled { get; set; }
         public bool FaceVerifyEnabled { get; set; }
         public int? PassScorePct { get; set; }
@@ -785,6 +798,7 @@ namespace Isas.CampaignService.DTOs
             Status = c.Status.ToString(),
             MaxCandidates = c.MaxCandidates,
             TimeLimitMinutes = c.TimeLimitMinutes,
+            MaxAttempts = c.MaxAttempts,   // ATT1
             AntiCheatEnabled = c.AntiCheatEnabled,
             FaceVerifyEnabled = c.FaceVerifyEnabled,
             PassScorePct = c.PassScorePct,

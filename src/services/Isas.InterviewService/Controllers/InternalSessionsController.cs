@@ -72,7 +72,9 @@ public class InternalSessionsController : ControllerBase
             req.CampaignPolicyVersion, req.CampaignPolicyExpression,
             req.CampaignPolicyPassScorePct, req.CampaignPolicyEngineVersion,
             // RNK1 · HĐ-2 / CAMP-21 — chuyển tiếp luật câu bỏ trống.
-            req.SkipPenalty);
+            req.SkipPenalty,
+            // ATT1 — thời lượng cả buổi (khoá JSON `durationMinutes`). null ⇒ không tính giờ.
+            req.DurationMinutes);
 
         try
         {

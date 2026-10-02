@@ -602,10 +602,10 @@ public class CampaignQuestionLabelsSc2Tests
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
                 It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(),
                 It.IsAny<string>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(),
-                It.IsAny<CampaignScoringPolicyInput?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+                It.IsAny<CampaignScoringPolicyInput?>(), It.IsAny<bool>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
             .Callback((Guid _, Guid _, Guid _, string _, IReadOnlyList<string> qs, IReadOnlyList<SessionCriterionInput> _,
                     DateTime? _, bool? _, int? _, int? _, int? _, string _, int _, IReadOnlyList<SessionQuestionInput>? _,
-                    CampaignScoringPolicyInput? _, bool _, CancellationToken _) => sent.Add(qs))
+                    CampaignScoringPolicyInput? _, bool _, int? _, CancellationToken _) => sent.Add(qs))
             .ReturnsAsync(() => new CampaignSessionResult(Guid.NewGuid(), new List<SessionQuestion> { new(Guid.NewGuid(), 1, "Q", 120) }));
         var auth = new Mock<IAuthProvisionClient>();
 
@@ -817,10 +817,10 @@ public class CampaignQuestionLabelsSc2Tests
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
                 It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(),
                 It.IsAny<string>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(),
-                It.IsAny<CampaignScoringPolicyInput?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+                It.IsAny<CampaignScoringPolicyInput?>(), It.IsAny<bool>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
             .Callback((Guid _, Guid _, Guid _, string _, IReadOnlyList<string> _, IReadOnlyList<SessionCriterionInput> _,
                     DateTime? _, bool? _, int? _, int? _, int? _, string _, int _, IReadOnlyList<SessionQuestionInput>? det,
-                    CampaignScoringPolicyInput? _, bool _, CancellationToken _) => sink.Add(det))
+                    CampaignScoringPolicyInput? _, bool _, int? _, CancellationToken _) => sink.Add(det))
             .ReturnsAsync(() => new CampaignSessionResult(Guid.NewGuid(), new List<SessionQuestion> { new(Guid.NewGuid(), 1, "Q", 120) }));
 
         foreach (var cand in candidates)

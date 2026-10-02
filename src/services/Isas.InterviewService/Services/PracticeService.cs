@@ -712,6 +712,9 @@ public class PracticeService : IPracticeService
 
         var language = ValidateLanguage(request.Language);
         var seniority = ValidateSeniority(request.Seniority);
+        // ATT1 — tính TRƯỚC reserve: hàm thuần (kẹp, không ném) nhưng giá trị ngoài miền mà lọt xuống
+        // INSERT sẽ vi phạm CHECK SAU khi đã giữ credit org — đúng lớp lỗi PAY-5 của F2b.
+        var durationMinutes = NormalizeCampaignDuration(request.DurationMinutes, request.CampaignId);
 
         await EnsureCapacityAsync(ct); // CreateCampaignSession chỉ được gọi khi tạo mới, không chặn resume.
 
@@ -763,6 +766,9 @@ public class PracticeService : IPracticeService
                 Status = SessionStatus.Ready,   // câu hỏi cấp sẵn → không cần sinh AI
                 CreatedAt = DateTime.UtcNow,
                 Deadline = request.ExpiresAt,   // I2: hạn chót nhận bài (B2B); null → không hard-deadline
+                // ATT1 — thời lượng cả buổi. Deadline VẪN là hạn cứng cho tới lúc begin (vào phòng);
+                // begin mới rút Deadline về min(hạn cứng, now + thời lượng). null ⇒ không tính giờ.
+                DurationMinutes = durationMinutes,
                 // Phỏng vấn THÍCH ỨNG (B2B): Campaign/HR bật → seed = K câu (`request.Questions` —
                 // ParticipationService đã RÚT ĐỀU theo nhóm từ ngân hàng đề, RNK1 · HĐ-8), chấm theo
                 // cùng tiêu chí. null → tắt.
@@ -1190,6 +1196,78 @@ public class PracticeService : IPracticeService
         return MapToResponse(
             session, questions, answers, criterionScores, cvStrengths, benchmark, criterionEvidence,
             focusEvents: focusEvents, pinnedCriteria: pinnedCriteria);
+    }
+
+    // ── BEGIN (ATT1 · [I1]): vào phòng thi — đồng hồ cả buổi bắt đầu chạy ─────────────────
+    //
+    // Ném: KeyNotFoundException (404) · UnauthorizedAccessException (403, không phải chủ buổi — cùng
+    // thứ tự với GET session) · SessionEndedException (409 SESSION_ENDED).
+    //
+    // Buổi tính giờ chưa vào phòng ⇒ BegunAt = now, Deadline = min(hạn cứng, now + thời lượng). Ghi
+    // bằng ExecuteUpdate CÓ ĐIỀU KIỆN `begun_at IS NULL` (+ status còn mở): hai tab cùng bấm thì một
+    // bên thắng, bên kia 0 dòng ⇒ ĐỌC LẠI và trả đúng giá trị bên thắng — begin lần hai không bao giờ
+    // dời đồng hồ. KHÔNG đổi Status (Ready giữ Ready tới answer đầu: Ready/InProgress đang mang nghĩa
+    // ở sweeper, R19, PAY-13).
+    //
+    // ⚠ Không dùng entity tracked + SaveChanges: practice_sessions có xmin (DB10), và ExecuteUpdate bỏ
+    // qua change tracker ⇒ entity tracked sẽ giữ giá trị CŨ (lỗi circuit-breaker INT-17b). Mọi lần đọc
+    // ở đây đều AsNoTracking.
+    public async Task<BeginSessionResponse> BeginSessionAsync(
+        Guid candidateId, Guid sessionId, CancellationToken ct = default)
+    {
+        var session = await _db.PracticeSessions.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == sessionId, ct)
+            ?? throw new KeyNotFoundException("Không tìm thấy phiên phỏng vấn này.");
+
+        if (session.CandidateId != candidateId)
+            throw new UnauthorizedAccessException("Không phải buổi của bạn");
+
+        if (SessionTiming.IsEnded(session.Status))
+            throw new SessionEndedException();
+
+        if (SessionTiming.IsLocked(session))
+        {
+            var now = DateTime.UtcNow;
+            var deadline = SessionTiming.ComputeBegunDeadline(
+                session.Deadline, now, session.DurationMinutes!.Value);
+
+            var won = await _db.PracticeSessions
+                .Where(s => s.Id == sessionId
+                            && s.BegunAt == null
+                            && (s.Status == SessionStatus.Ready || s.Status == SessionStatus.InProgress))
+                .ExecuteUpdateAsync(set => set
+                    .SetProperty(s => s.BegunAt, now)
+                    .SetProperty(s => s.Deadline, deadline)
+                    // DB14 — ExecuteUpdate không đi qua SaveChanges override ⇒ tự đóng dấu updated_at.
+                    .SetProperty(s => s.UpdatedAt, now), ct);
+
+            // Đọc lại bản đã commit: thắng ⇒ đúng giá trị vừa ghi; thua (tab khác / buổi vừa bị chốt) ⇒
+            // giá trị của bên thắng.
+            session = await _db.PracticeSessions.AsNoTracking()
+                .FirstAsync(s => s.Id == sessionId, ct);
+
+            if (won == 0)
+            {
+                if (SessionTiming.IsEnded(session.Status))
+                    throw new SessionEndedException();
+                _logger.LogInformation(
+                    "ATT1 begin: session {SessionId} đã vào phòng từ trước (tab khác) — trả lại mốc cũ", sessionId);
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "ATT1 begin: session {SessionId} vào phòng lúc {BegunAt}, hạn chót {Deadline} ({Minutes} phút)",
+                    sessionId, now, deadline, session.DurationMinutes);
+            }
+        }
+
+        var timed = SessionTiming.IsTimed(session);
+        return new BeginSessionResponse(
+            session.Id,
+            timed ? session.BegunAt : null,
+            session.Deadline,
+            DateTime.UtcNow,
+            timed ? session.DurationMinutes : null);
     }
 
     /// <summary>
@@ -2046,6 +2124,26 @@ public class PracticeService : IPracticeService
         return clamped;
     }
 
+    /// <summary>
+    /// ATT1 — lưới an toàn cho thời lượng nhận từ Campaign (đường internal không đi qua validate HTTP
+    /// của Campaign). Campaign chặn [5,180] lúc triển khai (C4) nên bình thường không bao giờ vào nhánh
+    /// kẹp; nhưng chiến dịch Active từ trước ATT1 (dev có nháp 0 / -30 / 100000) mà lọt xuống INSERT thì
+    /// vi phạm CHECK ck_practice_sessions_duration_minutes_range ⇒ 500 SAU khi đã giữ credit org, và HR
+    /// không sửa được vì thời lượng khoá sau triển khai (C3) ⇒ chiến dịch hỏng vĩnh viễn. Kẹp + log để
+    /// HR thấy mà ứng viên vẫn thi được (cùng mẫu ClampCampaignMaxQuestions ngay dưới). null giữ null.
+    /// </summary>
+    private int? NormalizeCampaignDuration(int? requested, Guid campaignId)
+    {
+        if (requested is not int value) return null;
+        if (value is >= SessionTiming.MinDurationMinutes and <= SessionTiming.MaxDurationMinutes) return value;
+
+        var clamped = Math.Clamp(value, SessionTiming.MinDurationMinutes, SessionTiming.MaxDurationMinutes);
+        _logger.LogWarning(
+            "Campaign {CampaignId} gửi durationMinutes={Requested} ngoài miền {Min}..{Max} → kẹp về {Clamped}",
+            campaignId, value, SessionTiming.MinDurationMinutes, SessionTiming.MaxDurationMinutes, clamped);
+        return clamped;
+    }
+
     private static PracticeSessionResponse MapToResponse(
         PracticeSession s, List<PracticeQuestion> questions, List<PracticeAnswer> answers,
         IReadOnlyList<SessionCriterionScore>? criterionScores = null,
@@ -2074,10 +2172,16 @@ public class PracticeService : IPracticeService
         // này để lấy câu hỏi mà làm bài. Khối tổng kết (MapResult) đã chặn B2B tường minh từ trước.
         var maskScoring = s.CampaignId is not null && !revealCampaignScoring;
 
+        // ATT1 · [I2] — buổi tính giờ CHƯA vào phòng: che NỘI DUNG câu (giữ id/orderNo/timeLimitSec để
+        // client dựng khung). KHÔNG chặn truy cập — trang chuẩn bị gọi GET trước begin và phải được 200.
+        // Đường HR/nội bộ (revealCampaignScoring) không bao giờ bị che: HR không "vào phòng".
+        var questionsLocked = SessionTiming.IsLocked(s) && !revealCampaignScoring;
+        var isTimed = SessionTiming.IsTimed(s);
+
         var qResponses = questions
             .OrderBy(q => q.OrderNo)
             .Select(q => new QuestionResponse(
-                q.Id, q.OrderNo, q.Content, q.TimeLimitSec,
+                q.Id, q.OrderNo, questionsLocked ? "" : q.Content, q.TimeLimitSec,
                 answerByQuestion.TryGetValue(q.Id, out var a) ? MapAnswer(s.Id, a, maskScoring) : null,
                 q.Kind.ToString(),   // phỏng vấn THÍCH ỨNG — Seed | FollowUp | Clarify | NewQuestion
                 q.GroundingRefs))    // RAG grounding — null (không grounding) / [] (ungrounded) / non-empty (grounded)
@@ -2103,7 +2207,12 @@ public class PracticeService : IPracticeService
             // null = buổi không theo dõi (khác [] = có theo dõi, chưa ghi nhận gì). Đường GET đã gom
             // sẵn danh sách (rỗng hoặc có dữ liệu) khi bật; đường tạo buổi không truyền gì (buổi vừa
             // sinh, chắc chắn 0 sự kiện) nên tự điền `[]` khi cờ bật, giữ `null` khi tắt.
-            FocusEvents: s.FocusTrackingEnabled ? focusEvents ?? Array.Empty<FocusEventSummaryResponse>() : null);
+            FocusEvents: s.FocusTrackingEnabled ? focusEvents ?? Array.Empty<FocusEventSummaryResponse>() : null,
+            // ATT1 · [I2] — đồng hồ cả buổi. Buổi không tính giờ ⇒ cả hai null (không suy ra từ cột lẻ).
+            DurationMinutes: isTimed ? s.DurationMinutes : null,
+            BeganAt: isTimed ? s.BegunAt : null,
+            ServerNow: DateTime.UtcNow,
+            QuestionsLocked: questionsLocked);
     }
 
     // BC9: dựng tổng kết buổi từ DB. Chỉ trả khi B2C đã Scored & có breakdown; ngược lại null.

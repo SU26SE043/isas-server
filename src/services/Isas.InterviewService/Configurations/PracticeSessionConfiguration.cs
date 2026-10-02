@@ -49,7 +49,17 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
             // UNKNOWN nên CHECK vẫn thoả; ghi tường minh `IS NULL OR` cho người đọc khỏi phải nhớ điều đó.
             t.HasCheckConstraint("ck_practice_sessions_b2c_score_formula",
                 "b2c_score_formula IS NULL OR b2c_score_formula IN ('Average', 'Weighted')");
+            // ATT1 — thời lượng cả buổi (phút). NULL = không tính giờ (B2C / B2B trước ATT1) ⇒ thoả CHECK.
+            // Khoảng 5..180 khớp luật Campaign lúc triển khai (C4); chốt thêm ở DB để không đường ghi
+            // nào (internal, bản Campaign khác phiên bản) đưa được giá trị vô nghĩa vào buổi thi.
+            t.HasCheckConstraint("ck_practice_sessions_duration_minutes_range",
+                "duration_minutes IS NULL OR duration_minutes BETWEEN 5 AND 180");
         });
+
+        // ATT1 — NULLABLE, KHÔNG default, KHÔNG backfill: null ở cả hai cột = "buổi không tính giờ /
+        // chưa vào phòng", đúng nghĩa cho mọi row cũ ⇒ buổi đang chạy lúc deploy giữ nguyên hành vi.
+        e.Property(x => x.DurationMinutes);
+        e.Property(x => x.BegunAt);
 
         // INT-17b — trần đào sâu MỖI câu gốc + bộ đếm lỗi decide-next. default 0 ⇒ row CŨ tự nhận
         // "chế độ cũ, chưa lỗi lần nào" lúc apply migration (khỏi backfill riêng).

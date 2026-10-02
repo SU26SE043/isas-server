@@ -335,6 +335,8 @@ builder.Services.Configure<DeliveryScoringOptions>(
     builder.Configuration.GetSection(DeliveryScoringOptions.SectionName));   // chấm cách nói bằng số đo
 builder.Services.Configure<CapacityOptions>(
     builder.Configuration.GetSection(CapacityOptions.SectionName));
+builder.Services.Configure<SessionDeadlineOptions>(
+    builder.Configuration.GetSection(SessionDeadlineOptions.SectionName));   // ATT1 — ân hạn chung upload + sweeper
 builder.Services.Configure<AdaptiveOptions>(
     builder.Configuration.GetSection(AdaptiveOptions.SectionName));   // phỏng vấn THÍCH ỨNG (B2C)
 builder.Services.Configure<RoadmapOptions>(

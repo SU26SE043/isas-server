@@ -149,13 +149,15 @@ CvAnalysisResponse  🔜 {
 
 **`GET /sessions/{sessionId}`** — Chi tiết (câu hỏi + bài nộp + điểm). Res **`200`** `PracticeSessionResponse` (mỗi câu kèm `answer` + `scores` nếu có; 🔜 BC9: kèm `result` tổng kết khi `status=Scored` & B2C). Lỗi: **401** · **403** (không phải buổi của bạn) · **404**.
 
+**✅ ATT1 (CAMP-23)** — GET session += `durationMinutes`·`beganAt`·`serverNow`·`questionsLocked` (buổi B2B tính giờ chưa begin ⇒ `content = ""`, vẫn 200). **`POST /sessions/{sessionId}/begin`** (không body) → 200 `{ sessionId, beganAt, deadline, serverNow, durationMinutes }`: set `begun_at` một lần (`WHERE begun_at IS NULL`), `deadline = min(hạn cứng, now + duration)`, gọi lại trả y hệt; buổi không tính giờ → 200 `beganAt = null`; buổi đã kết thúc → 409 `SESSION_ENDED`; không phải chủ → 403; không có → 404. Speech chưa begin → 409 `SESSION_NOT_BEGUN`. Chi tiết: `docs/services/interview.md`.
+
 **`POST /sessions/{sessionId}/submit`** — Chốt sổ (đi chấm nốt). Res **`204`**. Lỗi: **400** (chưa trả lời câu nào · trạng thái không cho submit) · **401** · **403** · **404**.
 
 **`POST /sessions/{sessionId}/answers`** — Upload audio trả lời.
 - Req `multipart/form-data`: `questionId: uuid` · `file: audio ≤50MB` · `durationSec: int`.
 - **Idempotent**: upload lại cùng `questionId` = ghi đè (reset transcript, publish lại chấm).
 - Res **`200/201`** `AnswerResponse` (`status="Uploaded"` → publish → `Scoring`). Answer đầu tiên: session `Ready→InProgress`.
-- Lỗi: **400** (thiếu field · file quá lớn) · **401** · **403** · **404** (session/câu không có) · **409** (session đã `Scoring`/`Scored`).
+- Lỗi: **400** (thiếu field · file quá lớn) · **401** · **403** · **404** (session/câu không có) · **409** (session đã `Scoring`/`Scored`). · **ATT1:** 409 `SESSION_NOT_BEGUN` (tính giờ, chưa begin) · 409 `SESSION_TIME_UP` (tính giờ, quá `deadline + SessionDeadline:GraceSeconds`=30s — cùng option với sweeper).
 
 ### Files — `/api/v1/interview/files` (JWT) — chỉ `.pdf`, `fileType ∈ {cv,jd}`
 
@@ -267,6 +269,8 @@ overall_score numeric(5,2)? 🔜 BC9 — điểm tổng 0–100, set khi `Scored
 answered_count int?         🔜 BC9 — số câu đã chấm lúc tính kết quả (snapshot)
 overall_comment text?       🔜 BC10 — nhận xét chung (AI sinh khi `Scored`, best-effort); null nếu chưa/AI lỗi/B2B
 scoring_scope_version int?  ✅ **Chấm theo phạm vi** (migration `AddScoringScopeAndQuestionTargets`) — con dấu thước đo. `null`=KHÔNG BIẾT (row có trước cột; ⚠ BK23: KHÔNG suy ra "khác phiên bản") · `1`=đã biết, chấm đủ rubric (B2B + buổi B2C không câu nào có nhãn) · `2`=đã biết, có ≥1 câu chấm trên tập HẸP HƠN (chỉ giá trị này chứng minh được "khác thước đo" cho BC15/F14/CAMP-10)
+duration_minutes int?      ✅ ATT1 — thời lượng cả buổi (B2B, từ campaign; CHECK null hoặc 5..180); null = không tính giờ (B2C + B2B trước ATT1)
+begun_at      timestamptz?  ✅ ATT1 — lúc vào phòng (`begin`)
 focus_tracking_enabled bool ✅ 2026-09-14 (migration `AddPracticeFocusEventsB2c`) — NOT NULL DEFAULT false. Ghim lúc tạo buổi: người luyện B2C có bật ghi nhận mất tập trung không (coaching — BC-6 ngoại lệ, xem §Business rules). `false` = buổi B2B · B2C không bật · buổi cũ trước cột này
 ```
 

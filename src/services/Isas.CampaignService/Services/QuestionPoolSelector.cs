@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 
 namespace Isas.CampaignService.Services;
@@ -55,12 +56,19 @@ public static class QuestionPoolSelector
     /// Nơi báo ca bất thường (số câu bắt buộc vượt trần). Không ném: ứng viên đang đứng ở màn bắt đầu
     /// và tổ chức đã bị giữ credit — nhưng cũng không cắt im lặng (tiền lệ F9).
     /// </param>
+    /// <param name="attemptNo">
+    /// ATT1 — lượt làm bài thứ mấy (1-based). Lượt làm lại (≥ 2) rút bộ câu gốc MỚI; lượt 1 (và ≤ 1)
+    /// rút ĐÚNG đề như trước ATT1 — ứng viên đang làm dở lúc deploy vào lại sẽ đi qua selector thêm
+    /// một lần, đổi hạt giống lượt 1 là đổi đề giữa chừng. Chiến dịch thi hết bộ (K null / K ≥ số câu)
+    /// thì mọi lượt vẫn ra cùng bộ câu đó — không còn câu nào khác để rút.
+    /// </param>
     public static List<PoolQuestion> Select(
         IReadOnlyList<PoolQuestion> pool,
         int? questionsPerSession,
         Guid campaignId,
         Guid candidateId,
-        Action<string>? onWarning = null)
+        Action<string>? onWarning = null,
+        int attemptNo = 1)
     {
         ArgumentNullException.ThrowIfNull(pool);
 
@@ -69,7 +77,7 @@ public static class QuestionPoolSelector
         if (questionsPerSession is not int take || take >= pool.Count)
             return pool.ToList();
 
-        var rng = CreateRng(campaignId, candidateId);
+        var rng = CreateRng(campaignId, candidateId, attemptNo);
 
         var required = pool.Where(q => q.IsRequired).ToList();
         var optional = pool.Where(q => !q.IsRequired).ToList();
@@ -166,12 +174,19 @@ public static class QuestionPoolSelector
     /// Hạt giống = SHA-256 của hai Guid. Dùng băm chứ không XOR/cộng hai <c>GetHashCode()</c>: hash code
     /// của Guid không ổn định giữa các tiến trình (randomized hashing), nên "cùng ứng viên ra cùng đề"
     /// sẽ đúng trong một tiến trình rồi sai sau lần khởi động lại — kiểu hỏng chỉ lộ ra trên production.
+    ///
+    /// <para>ATT1 — lượt ≤ 1: buffer 32 byte Y HỆT trước ATT1 (đề lượt 1 không được đổi — có test khoá
+    /// bằng danh sách id sinh từ code cũ). Lượt ≥ 2: buffer 36 byte = 32 byte cũ + 4 byte
+    /// <paramref name="attemptNo"/> little-endian (BinaryPrimitives, không phụ thuộc endianness máy) —
+    /// vẫn tái lập được theo (chiến dịch, ứng viên, lượt) nên vào lại lượt 2 cũng ra đúng đề lượt 2.</para>
     /// </summary>
-    private static Random CreateRng(Guid campaignId, Guid candidateId)
+    private static Random CreateRng(Guid campaignId, Guid candidateId, int attemptNo)
     {
-        Span<byte> buffer = stackalloc byte[32];
+        Span<byte> buffer = stackalloc byte[attemptNo >= 2 ? 36 : 32];
         campaignId.TryWriteBytes(buffer[..16]);
-        candidateId.TryWriteBytes(buffer[16..]);
+        candidateId.TryWriteBytes(buffer[16..32]);
+        if (attemptNo >= 2)
+            BinaryPrimitives.WriteInt32LittleEndian(buffer[32..], attemptNo);
 
         Span<byte> hash = stackalloc byte[32];
         SHA256.HashData(buffer, hash);

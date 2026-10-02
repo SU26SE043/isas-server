@@ -14,7 +14,14 @@
         public CampaignStatus Status { get; set; }
         public int? MaxCandidates { get; set; }
         public int? MaxConcurrentInterviews { get; set; }
+        // ATT1 — thời lượng CẢ BUỔI (phút) HR đặt. Trước ATT1 chỉ in vào email mời; từ ATT1 là giờ server
+        // đóng bài ⇒ có luật như mọi tham số đổi luật thi: ∈ [5, 180] (validate tầng ứng dụng — KHÔNG có
+        // CHECK DB vì dev còn nháp 0/−30/100000), bắt buộc lúc publish, khoá khi không còn Draft.
         public int? TimeLimitMinutes { get; set; }
+        // ATT1 — số lượt làm bài tối đa của MỖI ứng viên trong chiến dịch, ∈ [1, 3] (CHECK
+        // ck_campaigns_max_attempts_range), mặc định 1. Khi Active chỉ được TĂNG (áp cho mọi ứng viên,
+        // kể cả người đã hết lượt — cách cứu ca hệ thống chấm lỗi); Closed/Archived thì khoá.
+        public int MaxAttempts { get; set; } = 1;
         public bool AntiCheatEnabled { get; set; }
         // SEC-1: bật xác minh khuôn mặt trước bài (B2B-only, mặc định false). Gate face-verify (SEC-2) +
         // cho phép nhận cờ danh tính (face_mismatch/no_face/multiple_faces/identity_unverified) từ AIService.

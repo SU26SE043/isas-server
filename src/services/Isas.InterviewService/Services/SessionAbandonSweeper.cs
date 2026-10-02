@@ -38,15 +38,21 @@ public class SessionAbandonSweeper : BackgroundService
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ScoringOptions _options;
+    // ATT1 — ân hạn sau hạn chót. DÙNG CHUNG option với AnswerService (một con số cho hai đầu).
+    private readonly SessionDeadlineOptions _sessionDeadline;
     private readonly ILogger<SessionAbandonSweeper> _logger;
 
     public SessionAbandonSweeper(
         IServiceScopeFactory scopeFactory,
         IOptions<ScoringOptions> options,
-        ILogger<SessionAbandonSweeper> logger)
+        ILogger<SessionAbandonSweeper> logger,
+        // ATT1 — optional (default null) để mọi test dựng sweeper cũ (3 tham số) vẫn compile; thiếu ⇒
+        // mặc định trong code (30 giây), đúng hành vi production. DI có đăng ký ở Program.cs.
+        IOptions<SessionDeadlineOptions>? sessionDeadlineOptions = null)
     {
         _scopeFactory = scopeFactory;
         _options = options.Value;
+        _sessionDeadline = sessionDeadlineOptions?.Value ?? new SessionDeadlineOptions();
         _logger = logger;
     }
 
@@ -227,12 +233,16 @@ public class SessionAbandonSweeper : BackgroundService
         using (var scope = _scopeFactory.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<InterviewDbContext>();
-            var now = DateTime.UtcNow;
+            // ATT1 — chốt ở deadline + ân hạn (deadline < now − grace ⇔ deadline + grace < now), KHÔNG ở
+            // đúng deadline: câu trả lời cuối đang tải lên trong ân hạn vẫn được AnswerService nhận, sweeper
+            // chốt sớm hơn thì nó ăn "Buổi đã kết thúc". Viết dạng cutoff để vị từ vẫn là `deadline < @p`
+            // ⇒ partial index ix_practice_sessions_deadline còn dùng được (SweeperIndexTests).
+            var cutoff = SessionTiming.SweepCutoff(DateTime.UtcNow, _sessionDeadline.Grace);
 
             expired = await db.PracticeSessions
                 .Where(s => (s.Status == SessionStatus.Ready || s.Status == SessionStatus.InProgress)
                             && s.Deadline != null
-                            && s.Deadline < now)
+                            && s.Deadline < cutoff)
                 .Select(s => new ExpiredSession(s.Id, s.CampaignId, s.CandidateId))
                 .ToListAsync(ct);
         }
