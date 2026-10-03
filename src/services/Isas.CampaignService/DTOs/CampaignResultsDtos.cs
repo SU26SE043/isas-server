@@ -151,6 +151,9 @@ namespace Isas.CampaignService.DTOs
         public string? InterviewStatus { get; set; }      // NotStarted | InProgress | Abandoned | Completed | null
         public bool IsLatestAttempt { get; set; }          // = campaign_membership.session_id == SessionId
         public string? AbandonReason { get; set; }         // no_scored_answer · expired_no_answer · generation_failed …; null = không biết
+        // "Buổi NÀY bắt đầu lúc nào" — nguồn campaign_membership.attempt_started_at (mốc lượt đang giữ),
+        // KHÔNG phải interview_started_at (mốc lần đầu, sau một lượt làm lại vẫn là giờ lượt 1). null khi
+        // không phải lượt đang giữ, hoặc "không biết" (dòng có trước cột, không chắc chỉ một lượt).
         public DateTime? InterviewStartedAt { get; set; }
 
         // AC2 — nhãn ô "Kết quả" của dòng chưa chấm trong CSV/PDF. MỘT hàm cho cả hai bản xuất (F16:

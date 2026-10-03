@@ -31,11 +31,17 @@ namespace Isas.CampaignService.Models
         public Guid? SlotId { get; set; }
         public DateTime? InterviewDeadlineAt { get; set; }
         public InterviewProgressStatus? InterviewStatus { get; set; }   // NotStarted/InProgress/Completed (enum string)
-        // MON1-B1 — mốc SERVER ghi lúc buổi thi chuyển sang InProgress (ParticipationService). Set 1 lần,
-        // resume KHÔNG dời (`??=` trong khối chuyển trạng thái). null = "chưa bắt đầu" HOẶC "không biết"
-        // (membership có trước migration). B3 dùng làm điểm neo đối chiếu nhịp face_images.captured_at —
-        // client ngừng gửi thì captured_at ngừng tiến, mốc này thì không, nên server thấy được khoảng lặng.
+        // MON1-B1 — mốc SERVER ghi lần ĐẦU TIÊN membership chuyển sang InProgress (ParticipationService).
+        // Set 1 lần (`??=` trong khối chuyển trạng thái): resume KHÔNG dời, và LÀM LẠI lượt 2 (ATT1) cũng
+        // KHÔNG dời — nghĩa là "ứng viên bắt đầu phỏng vấn lần đầu lúc nào" (mốc phễu của analytics). Mốc
+        // của lượt ĐANG giữ nằm ở AttemptStartedAt. null = "chưa bắt đầu" HOẶC "không biết" (có trước migration).
         public DateTime? InterviewStartedAt { get; set; }
+        // Mốc SERVER ghi lúc Start tạo ra buổi MỚI (lượt hiện tại — buổi ở SessionId). Ghi trong khối
+        // `isNewSession` cùng AttemptCount++ và xoá AbandonReason: một vị ngữ "buổi mới" cho mọi field
+        // theo lượt. Vào lại buổi đang dở KHÔNG dời. Điểm neo của MonitoringGapSweeper LUẬT 2 (thời lượng
+        // buổi = mốc kết thúc − mốc này) và giá trị `interviewStartedAt` của dòng unscoredFlagged (AC2).
+        // null = "không biết" (BK23): dòng có trước cột chỉ được điền khi chắc chỉ có một lượt.
+        public DateTime? AttemptStartedAt { get; set; }
         // ATT1 — số LƯỢT làm bài đã dùng. Một lượt = một lần Start tạo ra buổi thi MỚI (Interview trả về
         // session KHÁC session membership đang giữ). Vào lại buổi đang dở / gọi trùng KHÔNG tính; Start
         // ném trước khi có buổi (402/429/502/lỗi sinh câu hỏi) KHÔNG tính. So với campaigns.max_attempts.

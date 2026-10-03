@@ -134,14 +134,16 @@ public class CampaignAnalyticsTests
     private static CampaignMembership SeedMembership(
         CampaignDbContext db, Guid campaignId, DateTime? joinedAt = null, Guid? sessionId = null,
         InterviewProgressStatus? interviewStatus = null, DateTime? interviewStartedAt = null,
-        Guid? invitationId = null, string? email = null, Guid? cvSubmissionId = null)
+        Guid? invitationId = null, string? email = null, Guid? cvSubmissionId = null,
+        DateTime? attemptStartedAt = null)
     {
         var m = new CampaignMembership
         {
             Id = Guid.NewGuid(), CampaignId = campaignId, CandidateId = Guid.NewGuid(), CvSubmissionId = cvSubmissionId,
             InvitationId = invitationId, Email = email, Status = MembershipStatus.Joined,
             JoinedAt = joinedAt ?? T0.AddDays(1), SessionId = sessionId, InterviewStatus = interviewStatus,
-            InterviewStartedAt = interviewStartedAt, CreatedAt = T0, UpdatedAt = T0,
+            InterviewStartedAt = interviewStartedAt, AttemptStartedAt = attemptStartedAt,
+            CreatedAt = T0, UpdatedAt = T0,
         };
         db.CampaignMemberships.Add(m);
         db.SaveChanges();
@@ -529,6 +531,25 @@ public class CampaignAnalyticsTests
         Assert.Equal(new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc), mb.PeriodStart);
         Assert.Equal((1, 1, 1, 1), (mb.Scored, mb.Joins, mb.InterviewsStarted, mb.CampaignsCreated));
         Assert.Equal("month", monthly.Granularity);
+    }
+
+    // Phễu "đã bắt đầu" đếm theo LẦN ĐẦU ứng viên bắt đầu (interview_started_at), KHÔNG theo lượt đang giữ
+    // (attempt_started_at). Neo theo lượt thì người làm lại lượt 2 sang kỳ sau sẽ biến mất khỏi kỳ trước —
+    // số của kỳ đã qua tự thay đổi.
+    [Fact]
+    public async Task Bucket_InterviewsStarted_TheoLanDau_KhongTheoLuotHienTai()
+    {
+        using var t = new CampaignTestDb();
+        var org = Guid.NewGuid();
+        var c = SeedCampaign(t.Db, org, createdAt: T0.AddDays(20));
+        SeedMembership(t.Db, c.Id, joinedAt: T0.AddDays(20), sessionId: Guid.NewGuid(),
+            interviewStatus: InterviewProgressStatus.InProgress,
+            interviewStartedAt: T0.AddDays(3), attemptStartedAt: T0.AddDays(9));
+
+        var res = await NewService(t.NewContext()).GetAsync(org, Period30d, default);
+
+        Assert.Equal(1, Assert.Single(res.Buckets, b => b.PeriodStart == T0.AddDays(3)).InterviewsStarted);
+        Assert.DoesNotContain(res.Buckets, b => b.PeriodStart == T0.AddDays(9));
     }
 
     // ── interviews: pendingScore / inProgress / completed / started đúng định nghĩa ───────────────

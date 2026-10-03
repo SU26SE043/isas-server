@@ -2310,7 +2310,9 @@ namespace Isas.CampaignService.Services
                         IsLatestAttempt = isLatestAttempt,
                         InterviewStatus = isLatestAttempt ? identity.InterviewStatus?.ToString() : null,
                         AbandonReason = isLatestAttempt ? identity.AbandonReason : null,
-                        InterviewStartedAt = isLatestAttempt ? identity.InterviewStartedAt : null
+                        // Mốc của CHÍNH buổi này (lượt đang giữ) — không phải mốc lần đầu: sau một lượt làm
+                        // lại, interview_started_at vẫn là giờ lượt 1.
+                        InterviewStartedAt = isLatestAttempt ? identity.AttemptStartedAt : null
                     };
                 })
                 // Flags rỗng không xảy ra ở đây (row dựng từ chính allFlags), nhưng DefaultIfEmpty giữ
@@ -2600,13 +2602,13 @@ namespace Isas.CampaignService.Services
         // Fallback `?? m.CvSubmission.X`: che luôn membership đường-2 cũ mà backfill của migration sót
         // (và mọi row tạo trước F5 chưa join lại) → HR vẫn thấy tên/email thay vì ô trống.
         // RNK1: 3 field CV (score/risk/version) lấy THẲNG từ cùng LEFT JOIN — không query phụ theo ứng viên.
-        // AC2: thêm 4 cột membership (buổi đang giữ + trạng thái + lý do bỏ ngang + mốc bắt đầu) cho khu
-        // `unscoredFlagged` — vẫn CÙNG query, chỉ mở rộng projection.
+        // AC2: thêm 4 cột membership (buổi đang giữ + trạng thái + lý do bỏ ngang + mốc bắt đầu của buổi
+        // đang giữ = attempt_started_at) cho khu `unscoredFlagged` — vẫn CÙNG query, chỉ mở rộng projection.
         private readonly record struct CandidateIdentity(
             string? FullName, string? Email,
             int? CvMatchScore, string? CvVerificationRisk, int? CvScreeningVersion,
             Guid? SessionId = null, InterviewProgressStatus? InterviewStatus = null,
-            string? AbandonReason = null, DateTime? InterviewStartedAt = null);
+            string? AbandonReason = null, DateTime? AttemptStartedAt = null);
 
         private async Task<Dictionary<Guid, CandidateIdentity>> GetIdentityByCandidateAsync(
             Guid campaignId, CancellationToken ct)
@@ -2624,7 +2626,7 @@ namespace Isas.CampaignService.Services
                     m.SessionId,
                     m.InterviewStatus,
                     m.AbandonReason,
-                    m.InterviewStartedAt
+                    m.AttemptStartedAt
                 })
                 .ToListAsync(ct);
 
@@ -2637,7 +2639,7 @@ namespace Isas.CampaignService.Services
                     var x = g.First();
                     return new CandidateIdentity(
                         x.FullName, x.Email, x.CvMatchScore, x.CvVerificationRisk, x.CvScreeningVersion,
-                        x.SessionId, x.InterviewStatus, x.AbandonReason, x.InterviewStartedAt);
+                        x.SessionId, x.InterviewStatus, x.AbandonReason, x.AttemptStartedAt);
                 });
         }
 
