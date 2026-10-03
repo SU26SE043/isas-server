@@ -91,16 +91,17 @@ public class FocusTrackingB2cTests
     }
 
     [Fact]
-    public void Whitelist_ChiCoBaTinHieuHanhVi()
+    public void Whitelist_BaTinHieuHanhVi_CongCameraBlocked()
     {
-        // camera_blocked / monitoring_gap CỐ Ý không có: chúng chỉ có nghĩa khi giám sát webcam,
-        // mà B2C đã chốt "chỉ cờ hành vi". no_face/multiple_faces (2026-09-17) cũng KHÔNG nằm trong
-        // `Allowed` dù giờ đã hợp lệ ở tầng DB (Persistable) — client HTTP không được tự khai chúng,
-        // chỉ PracticeFaceCheckService mới ghi được sau khi hỏi AIService thật.
+        // monitoring_gap CỐ Ý không có: nó chỉ có nghĩa khi giám sát webcam LIÊN TỤC kiểu B2B.
+        // camera_blocked có từ 2026-10-03: khung tối/bị che chỉ trình duyệt thấy (FE không gửi ảnh đen
+        // cho AI), nên client là nguồn duy nhất. no_face/multiple_faces (2026-09-17) vẫn KHÔNG nằm trong
+        // `Allowed` dù hợp lệ ở tầng DB (Persistable) — client HTTP không được tự khai chúng, chỉ
+        // PracticeFaceCheckService mới ghi được sau khi hỏi AIService thật.
         Assert.Equal(
-            new[] { "focus_lost", "paste", "tab_switch" },
+            new[] { "camera_blocked", "focus_lost", "paste", "tab_switch" },
             FocusSignals.Allowed.OrderBy(x => x, StringComparer.Ordinal).ToArray());
-        Assert.False(FocusSignals.IsAllowed("camera_blocked"));
+        Assert.True(FocusSignals.IsAllowed(FocusSignals.CameraBlocked));
         Assert.False(FocusSignals.IsAllowed("monitoring_gap"));
         Assert.False(FocusSignals.IsAllowed(null));
         Assert.False(FocusSignals.IsAllowed(FocusSignals.NoFace));
@@ -124,8 +125,29 @@ public class FocusTrackingB2cTests
     public void Persistable_HopCuaAllowedVaServerOnly_KhopCheckDb()
     {
         Assert.Equal(
-            new[] { "focus_lost", "multiple_faces", "no_face", "paste", "tab_switch" },
+            new[] { "camera_blocked", "focus_lost", "multiple_faces", "no_face", "paste", "tab_switch" },
             FocusSignals.Persistable.OrderBy(x => x, StringComparer.Ordinal).ToArray());
+    }
+
+    [Fact]
+    public async Task CheckDb_NhanDuMoiGiaTriPersistable()
+    {
+        // Vế còn lại của "khớp hai đầu": danh sách C# đúng mà CHECK ở DB quên nới thì service ghi
+        // xong nổ DbUpdateException — với camera_blocked đó là đúng thứ khiến che cam biến mất khỏi
+        // màn kết quả. SQLite CÓ ép CHECK nên phép kiểm này đo được thật.
+        using var t = new TestDb();
+        var session = TestDb.Session(Guid.NewGuid(), SessionStatus.InProgress);
+        t.Db.PracticeSessions.Add(session);
+        await t.Db.SaveChangesAsync();
+
+        foreach (var signal in FocusSignals.Persistable)
+            t.Db.PracticeFocusEvents.Add(new PracticeFocusEvent
+            {
+                SessionId = session.Id, SignalType = signal, OccurredAt = DateTime.UtcNow
+            });
+        await t.Db.SaveChangesAsync();
+
+        Assert.Equal(FocusSignals.Persistable.Count, await t.Db.PracticeFocusEvents.CountAsync());
     }
 
     // ── Ghim toggle lúc tạo buổi ────────────────────────────────────────────
@@ -394,6 +416,25 @@ public class FocusTrackingB2cTests
         Assert.Equal(
             FocusSignals.MaxEventsPerSession,
             await t.Db.PracticeFocusEvents.CountAsync(e => e.SessionId == s.Id));
+    }
+
+    [Fact]
+    public async Task CameraBlocked_ClientKhai_GhiDuocVaHienOTongHop()
+    {
+        // Che cam: FE đo khung tối tại chỗ rồi khai `camera_blocked`. Trước 2026-10-03 FE chỉ hiện
+        // toast rồi thôi ⇒ màn kết quả không bao giờ biết. Khoá cả đường ghi lẫn đường đọc.
+        using var t = new TestDb();
+        var candidateId = Guid.NewGuid();
+        var s = await SeedSessionAsync(t, candidateId);
+
+        await FocusService(t.Db).RecordFocusEventAsync(
+            candidateId, s.Id,
+            new RecordFocusEventRequest("Camera_Blocked", "Khung hình tối hoặc camera bị che"), default);
+
+        var saved = await t.Db.PracticeFocusEvents.SingleAsync();
+        Assert.Equal(FocusSignals.CameraBlocked, saved.SignalType);
+        var response = await FocusService(t.Db).GetSessionAsync(candidateId, s.Id, default);
+        Assert.Single(response!.FocusEvents!, e => e.SignalType == FocusSignals.CameraBlocked && e.Count == 1);
     }
 
     [Fact]
