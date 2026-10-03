@@ -65,6 +65,8 @@ public sealed class CampaignTestDb : IDisposable
             // ngoài dải thì tự đặt tường minh.
             TimeLimitMinutes = 30,
             StartsAt = DateTime.UtcNow,
+            // Publish đòi đủ giờ bắt đầu + hạn nộp (nháp được thiếu, lên sóng thì không) ⇒ seed như campaign thật.
+            ExpiresAt = DateTime.UtcNow.AddDays(30),
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };

@@ -687,7 +687,8 @@ public class ParticipationServiceTests
     public async Task Start_ExpiresAtNull_TruyenNull_KhongHardDeadline()
     {
         using var tdb = new CampaignTestDb();
-        var camp = ActiveCampaignWithQuestionAndCriterion(tdb);   // ExpiresAt = null
+        var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
+        camp.ExpiresAt = null;   // helper nay seed hạn nộp ⇒ ca "không hạn" phải đặt tường minh
         tdb.Db.CampaignMemberships.Add(Membership(camp.Id, FixedCandidate));
         await tdb.Db.SaveChangesAsync();
 
