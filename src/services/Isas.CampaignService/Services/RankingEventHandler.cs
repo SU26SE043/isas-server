@@ -136,6 +136,10 @@ namespace Isas.CampaignService.Services
             membership.InterviewStatus = InterviewProgressStatus.Abandoned;
             membership.SessionId ??= evt.SessionId;
             membership.InterviewDeadlineAt = null;
+            // AC2 — giữ LÝ DO bỏ ngang cho HR (bảng kết quả + CSV/PDF). Đứng SAU hai guard ở trên: sự kiện
+            // của lượt CŨ đến muộn không được ghi đè lý do của lượt đang chạy, và buổi đã Completed thì
+            // không có gì để ghi. Rỗng ⇒ null ("không biết"), không lưu chuỗi trắng.
+            membership.AbandonReason = string.IsNullOrWhiteSpace(evt.Reason) ? null : evt.Reason.Trim();
             membership.UpdatedAt = DateTime.UtcNow;
             await _db.SaveChangesAsync(ct);
             _logger.LogInformation("membership {MembershipId} released after abandoned session {SessionId}", membership.Id, evt.SessionId);

@@ -125,14 +125,15 @@ namespace Isas.CampaignService.Services
                         }
 
                         // R7: ứng viên có cờ mà CHƯA Scored — nối SAU bảng ranking. Hạng/Điểm/Chấm-lúc để TRỐNG
-                        // (chưa chấm); Kết quả = "Chưa chấm". Cùng nguồn `results` với CSV ⇒ hai bản xuất không lệch.
+                        // (chưa chấm); Kết quả = nhãn trạng thái buổi (AC2) qua CÙNG helper với CSV. Cùng nguồn
+                        // `results` với CSV ⇒ hai bản xuất không lệch.
                         foreach (var u in results.UnscoredFlagged)
                         {
                             table.Cell().Element(Cell).Text(string.Empty);
                             table.Cell().Element(Cell).Text(u.FullName ?? string.Empty);
                             table.Cell().Element(Cell).Text(u.Email ?? string.Empty);
                             table.Cell().Element(Cell).AlignRight().Text(string.Empty);
-                            table.Cell().Element(Cell).Text("Chưa chấm");
+                            table.Cell().Element(Cell).Text(UnscoredFlaggedRow.ExportResultLabel(u));
                             table.Cell().Element(Cell).Text(string.Empty);
                             table.Cell().Element(Cell).Text(string.Empty);   // RNK1 · HĐ-3 — "Câu": chưa có snapshot
                             table.Cell().Element(Cell).Text(CvText(u.CvMatchScore, u.CvVerificationRisk));   // RNK1 · HĐ-3 — "CV"

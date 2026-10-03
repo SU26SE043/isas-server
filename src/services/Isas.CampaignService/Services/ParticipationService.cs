@@ -420,7 +420,12 @@ namespace Isas.CampaignService.Services
             // mới đều gán CÙNG giá trị tuyệt đối AttemptCount + 1 ⇒ không đếm đôi.)
             var isNewSession = membership.SessionId != session.SessionId;
             if (isNewSession)
+            {
                 membership.AttemptCount += 1;
+                // AC2 — lý do bỏ ngang thuộc về buổi CŨ; lượt mới bắt đầu sạch, cùng SaveChanges với
+                // SessionId mới (không có cửa sổ "buổi mới mang lý do bỏ ngang của buổi trước").
+                membership.AbandonReason = null;
+            }
             membership.SessionId = session.SessionId;
             // Deadline được chốt lần start đầu; HR đổi slot sau đó không được hồi tố session đang chạy.
             membership.InterviewDeadlineAt ??= interviewDeadline;
