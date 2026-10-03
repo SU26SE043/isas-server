@@ -53,7 +53,7 @@ namespace Isas.CampaignService.Controllers
 
         // Note cờ khi AIService không giải mã được ảnh (422 IMAGE_UNREADABLE) ở face-check.
         internal const string ReferenceUnreadableNote = "Ảnh mốc không đọc được — ứng viên cần chụp lại ảnh tham chiếu.";
-        internal const string LiveUnreadableNote = "Ảnh giám sát không đọc được (tệp ảnh hỏng hoặc sai định dạng).";
+        internal const string LiveUnreadableNote = "Ảnh kiểm mặt không đọc được (tệp ảnh hỏng hoặc sai định dạng).";
 
         // Tín hiệu DANH TÍNH (mirror SessionFlagController) — lưu khi anti_cheat HOẶC face_verify bật.
         private static readonly HashSet<string> IdentitySignals = new(StringComparer.OrdinalIgnoreCase)

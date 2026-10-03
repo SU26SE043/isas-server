@@ -52,6 +52,8 @@ public class FaceUnreadableImageTests
     {
         public readonly List<string> Uploaded = new();
         public readonly List<string> Deleted = new();
+        public Func<string, Task>? OnDelete;
+        public bool FailDelete;
 
         public Task<string> UploadAsync(IFormFile file, string path, CancellationToken ct = default)
         {
@@ -59,10 +61,11 @@ public class FaceUnreadableImageTests
             return Task.FromResult(path);
         }
 
-        public Task DeleteAsync(string path, CancellationToken ct = default)
+        public async Task DeleteAsync(string path, CancellationToken ct = default)
         {
+            if (OnDelete is not null) await OnDelete(path);
+            if (FailDelete) throw new InvalidOperationException($"S3 down for {path}");
             Deleted.Add(path);
-            return Task.CompletedTask;
         }
 
         public Task<Stream> DownloadAsync(string path, CancellationToken ct = default)
@@ -265,6 +268,43 @@ public class FaceUnreadableImageTests
         Assert.Empty(LedgerKeys(t, FaceImageKind.Reference));
     }
 
+    // Thứ tự dọn bắt buộc S3 TRƯỚC, sổ SAU (BK25): lúc xoá S3 dòng sổ phải còn; S3 hỏng ⇒ GIỮ dòng sổ để
+    // FaceImagePurger dọn, và câu trả lời vẫn là 400 (không đổi thành 500 vì lỗi dọn dẹp).
+    [Fact]
+    public async Task Enroll_AnhKhongDoc_XoaS3TruocSoSau()
+    {
+        using var t = new CampaignTestDb();
+        var (camp, cand) = Seed(t, OldRefKey);
+        var files = new FakeFileService();
+        bool? ledgerExistedAtDelete = null;
+        files.OnDelete = async key =>
+            ledgerExistedAtDelete = await t.NewContext().FaceImages.AsNoTracking().AnyAsync(x => x.StorageKey == key);
+
+        var result = await NewController(t.NewContext(), cand, files,
+                DetectThrows(new ImageUnreadableException("image")).Object)
+            .Enroll(camp.Id, FixedSession, JunkJpeg(), default);
+
+        Assert.Equal("REFERENCE_UNREADABLE", BadBody(result).GetProperty("code").GetString());
+        Assert.True(ledgerExistedAtDelete);                                          // sổ còn lúc xoá S3 ⇒ S3 trước
+        Assert.Equal(new[] { OldRefKey }, LedgerKeys(t, FaceImageKind.Reference));  // rồi mới gỡ dòng sổ
+    }
+
+    [Fact]
+    public async Task Enroll_AnhKhongDoc_S3Loi_GiuDongSo_Van400()
+    {
+        using var t = new CampaignTestDb();
+        var (camp, cand) = Seed(t);
+        var files = new FakeFileService { FailDelete = true };
+
+        var result = await NewController(t.NewContext(), cand, files,
+                DetectThrows(new ImageUnreadableException("image")).Object)
+            .Enroll(camp.Id, FixedSession, JunkJpeg(), default);
+
+        Assert.Equal("REFERENCE_UNREADABLE", BadBody(result).GetProperty("code").GetString());
+        Assert.Equal(files.Uploaded, LedgerKeys(t, FaceImageKind.Reference));   // object còn ⇒ dấu vết còn
+        Assert.Null(RefKeyInDb(t));
+    }
+
     // Hợp đồng hai phía, chiều enroll: body 422 THẬT của AIService đi qua client THẬT ⇒ 400, KHÔNG 204.
     [Fact]
     public async Task Enroll_DauCuoi_422ThatQuaClientThat_400_KhongFailOpen()
@@ -358,6 +398,7 @@ public class FaceUnreadableImageTests
         var flag = Assert.Single(Flags(t));
         Assert.Equal("no_face", flag.SignalType);
         Assert.Equal(FaceVerifyController.LiveUnreadableNote, flag.Note);
+        Assert.StartsWith("Ảnh kiểm mặt không đọc được", flag.Note);
         // ảnh live rác vẫn nằm trong sổ (BK25) — chính vì thế mà không cờ = trông như vẫn được giám sát
         Assert.Equal(files.Uploaded, LedgerKeys(t, FaceImageKind.Live));
     }
