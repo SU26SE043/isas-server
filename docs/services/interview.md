@@ -35,7 +35,7 @@ PracticeSessionResponse {
 }
 
 FocusEventSummaryResponse {  // ✅ 2026-09-14 — coaching, KHÔNG phải chống gian lận (xem BC-6)
-  signalType: enum(string)              // tab_switch·paste·focus_lost — CHỈ 3 giá trị này (không có camera_blocked/monitoring_gap — B2C không giám sát webcam)
+  signalType: enum(string)              // tab_switch·paste·focus_lost·camera_blocked (client khai) · no_face·multiple_faces (server ghi sau /face-detect) — monitoring_gap KHÔNG có
   count:      int
   firstAt:    datetime
   lastAt:     datetime
@@ -61,7 +61,7 @@ AnswerResponse {
 **`GET /interview/practice/sessions/{sessionId}/answers/{answerId}/audio`** — Phát/tải audio câu trả lời của chính candidate. `AnswerResponse.audioUrl` trỏ tới route này; server xác minh chủ session từ JWT rồi stream audio, không lộ SeaweedFS object key. Không có audio/answer/session → **404**; session của người khác → **403**. **`Content-Type` theo định dạng thật của bản ghi** (suy từ đuôi object key — `audio/webm`, `audio/mp4`, …; đuôi lạ/dữ liệu cũ → `application/octet-stream`), không còn trả cứng `audio/webm` — BK27.
 - **`AnswerResponse.rejectReason`** (E11c, additive, đặt cuối): `"no_speech"` = VAD không thấy vùng tiếng nói (bài im lặng — CAMP-21; `status=Skipped` nhưng **có** audio) · `null` = không có lý do / dòng cũ không biết (BK23). Client dùng để phân biệt *im lặng* với *bỏ trống* (không audio) và *chốt sổ buổi kẹt* (`Skipped`, không lý do).
 
-**`POST /interview/practice/sessions/{sessionId}/focus-events`** ✅ (2026-09-14) — Ghi một tín hiệu mất tập trung của buổi luyện B2C (**coaching**, KHÔNG phải chống gian lận — BC-6 ngoại lệ). Body `{ signalType: string, note?: string }`. `signalType` chỉ nhận **`tab_switch` / `paste` / `focus_lost`** (whitelist tường minh, `camera_blocked`/`monitoring_gap` KHÔNG có — B2C không giám sát webcam). **204** kể cả khi không lưu gì — buổi tắt theo dõi / B2B (`campaign_id != null`) / đã kết thúc (Scored·SessionAbandoned·Scoring·Completed·Failed) / chạm trần 500 dòng/buổi đều là ca "không áp dụng", **no-op** chứ không lỗi. **400** tín hiệu ngoài whitelist · **403** không phải buổi của mình · **404** buổi không tồn tại. Mốc thời gian **server tự đóng dấu** (`OccurredAt`), không nhận từ client. `note` bị cắt còn tối đa 256 ký tự nếu dài hơn.
+**`POST /interview/practice/sessions/{sessionId}/focus-events`** ✅ (2026-09-14) — Ghi một tín hiệu mất tập trung của buổi luyện B2C (**coaching**, KHÔNG phải chống gian lận — BC-6 ngoại lệ). Body `{ signalType: string, note?: string }`. `signalType` chỉ nhận **`tab_switch` / `paste` / `focus_lost` / `camera_blocked`** (whitelist tường minh; `camera_blocked` từ 2026-10-03 = FE thấy khung webcam tối/bị che; `no_face`/`multiple_faces` → **400**, chỉ server ghi; `monitoring_gap` KHÔNG có). **204** kể cả khi không lưu gì — buổi tắt theo dõi / B2B (`campaign_id != null`) / đã kết thúc (Scored·SessionAbandoned·Scoring·Completed·Failed) / chạm trần 500 dòng/buổi đều là ca "không áp dụng", **no-op** chứ không lỗi. **400** tín hiệu ngoài whitelist · **403** không phải buổi của mình · **404** buổi không tồn tại. Mốc thời gian **server tự đóng dấu** (`OccurredAt`), không nhận từ client. `note` bị cắt còn tối đa 256 ký tự nếu dài hơn.
 
 **`POST /interview/practice/sessions/{sessionId}/face-check`** ✅ (2026-09-17) — Kiểm mặt định kỳ của buổi luyện B2C, **detect-only** (đếm mặt, KHÔNG so khớp danh tính — BC-6 ngoại lệ mở rộng). `multipart/form-data`, field `image` (JPEG, ≤2MB). Guard theo ĐÚNG thứ tự `focus-events`: không tồn tại → **404** · không phải buổi của mình → **403** (trước mọi no-op) · B2B (`campaign_id != null`) → **204 no-op** · tắt theo dõi → **204 no-op, KHÔNG upload KHÔNG gọi AI** · đã kết thúc → **204 no-op** · ảnh rỗng/quá 2MB/không phải JPEG (3 byte đầu ≠ `FF D8 FF`) → **400**. Đường thật: ghi sổ `practice_face_images` (S3 key) **TRƯỚC** rồi mới upload → hỏi AIService `POST /face-detect` → lọc tín hiệu chỉ giữ `no_face`/`multiple_faces` → **xoá ảnh ngay** (S3 TRƯỚC, dòng sổ SAU — xoá S3 hụt thì GIỮ dòng cho purger; dùng `CancellationToken.None` để client ngắt giữa chừng không để ảnh lại) → ghi vào **cùng bảng** `practice_focus_events` (chạm trần 500 dòng/buổi thì bỏ qua, không lỗi) → trả **200** `{ faceCount: int, signals: string[] }`. AIService lỗi/hết giờ → **502**/**504** (ảnh + dòng sổ đã ghi và **chưa xoá** — không mồ côi, purger dọn). `GET /practice/sessions/{id}` gom cả hai loại tín hiệu (hành vi + mặt) vào cùng `focusEvents[]` — client không cần đường đọc riêng.
 
@@ -454,10 +454,11 @@ focus_tracking_enabled bool ✅ 2026-09-14 (migration `AddPracticeFocusEventsB2c
 ```
 id           uuid          PK
 session_id   uuid          FK → practice_sessions (Cascade) — xoá buổi là xoá sạch dấu vết
-signal_type  varchar(32)   CHECK IN ('tab_switch','paste','focus_lost','no_face','multiple_faces') — whitelist ĐÓNG.
-                           `tab_switch`/`paste`/`focus_lost` = client tự khai (FocusSignals.Allowed); `no_face`/`multiple_faces` =
-                           SERVER-ONLY (FocusSignals.ServerOnly), chỉ ghi được sau khi PracticeFaceCheckService hỏi AIService thật.
-                           camera_blocked/monitoring_gap KHÔNG có — B2C không giám sát webcam liên tục.
+signal_type  varchar(32)   CHECK IN ('tab_switch','paste','focus_lost','no_face','multiple_faces','camera_blocked') — whitelist ĐÓNG.
+                           `tab_switch`/`paste`/`focus_lost`/`camera_blocked` = client tự khai (FocusSignals.Allowed; camera_blocked
+                           từ 2026-10-03 — migration AllowCameraBlockedFocusSignal); `no_face`/`multiple_faces` = SERVER-ONLY
+                           (FocusSignals.ServerOnly), chỉ ghi được sau khi PracticeFaceCheckService hỏi AIService thật.
+                           monitoring_gap KHÔNG có — B2C không giám sát webcam liên tục.
 note         varchar(256)? chi tiết ngắn (client gửi kèm cho 3 tín hiệu hành vi; server tự sinh cho 2 tín hiệu mặt — cắt còn 256
                            ký tự ở tầng C#, SQLite không ép varchar)
 occurred_at  timestamptz   server tự đóng dấu khi nhận — KHÔNG nhận mốc thời gian từ client
