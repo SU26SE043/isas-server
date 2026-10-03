@@ -11,7 +11,9 @@ namespace Isas.CampaignService.Controllers
     /// <summary>
     /// SEC-2 — cổng xác minh khuôn mặt (face-verify) cho ứng viên B2B. 2 endpoint (JWT Candidate + phải là
     /// thành viên campaign — mirror <see cref="SessionFlagController"/>):
-    ///  1) <c>face-enroll</c>: upload ảnh THAM CHIẾU → S3 KEY → gán <c>CampaignMembership.ReferenceImageKey</c>.
+    ///  1) <c>face-enroll</c>: upload ảnh THAM CHIẾU vào key riêng → AIService đếm mặt (AC2) → ĐÚNG 1 mặt
+    ///     thì gán <c>CampaignMembership.ReferenceImageKey</c>; 0 / &gt;1 mặt → 400, mốc cũ giữ nguyên;
+    ///     AIService lỗi → vẫn nhận (fail-open, SEC-5).
     ///  2) <c>face-check</c>: chỉ khi campaign bật <c>FaceVerifyEnabled</c>; upload ảnh LIVE → S3 KEY →
     ///     gọi AIService so khớp → mỗi tín hiệu (no_face/multiple_faces/face_mismatch) → 1 cờ session_flags cho HR.
     /// D13/SEC-5: CHỈ FLAG cho HR, KHÔNG auto-chặn; thiếu ảnh tham chiếu ≠ gian lận (cờ identity_unverified).
@@ -43,6 +45,10 @@ namespace Isas.CampaignService.Controllers
             _logger = logger;
         }
 
+        // AC2 — mã lỗi máy đọc được khi ảnh mốc bị loại (FE map ra câu hướng dẫn chụp lại).
+        internal const string ReferenceNoFaceCode = "REFERENCE_NO_FACE";
+        internal const string ReferenceMultipleFacesCode = "REFERENCE_MULTIPLE_FACES";
+
         // Tín hiệu DANH TÍNH (mirror SessionFlagController) — lưu khi anti_cheat HOẶC face_verify bật.
         private static readonly HashSet<string> IdentitySignals = new(StringComparer.OrdinalIgnoreCase)
             { "face_mismatch", "no_face", "multiple_faces", "identity_unverified" };
@@ -65,7 +71,12 @@ namespace Isas.CampaignService.Controllers
             var (membership, error) = await ResolveMembershipAsync(campaignId, candidateId.Value, sessionId, ct);
             if (error is not null) return error;
 
-            var key = BuildKey($"campaigns/{campaignId}/candidates/{candidateId}/face-reference", image);
+            // AC2 — ảnh mới vào KEY RIÊNG mỗi lần enroll (basename vẫn bắt đầu bằng `face-reference`,
+            // script dọn S3 lọc theo basename). Trước đây key là deterministic `.../face-reference{ext}`:
+            // upload ĐÈ lên key đó rồi mới kiểm thì một ảnh xấu đã PHÁ mất mốc TỐT đang có trước khi
+            // ta kịp nói "không nhận". Key riêng ⇒ mốc cũ đứng yên cho tới khi ảnh mới được chấp nhận.
+            var key = BuildKey(
+                $"campaigns/{campaignId}/candidates/{candidateId}/face-reference-{Guid.NewGuid():N}", image);
             var previousKey = membership!.ReferenceImageKey;
 
             // BK25 — ghi sổ TRƯỚC khi upload (xem bất biến ở FaceImage): không được để object nằm
@@ -74,21 +85,59 @@ namespace Isas.CampaignService.Controllers
 
             await _file.UploadAsync(image, key, ct);
 
+            // AC2 — ảnh mốc phải có ĐÚNG 1 khuôn mặt. Prod 03/10: mốc có 2 mặt (mặt phụ 92×112 ở mép,
+            // tin cậy 0.81) ⇒ suốt buổi mọi lượt face-check chỉ ra identity_unverified (live 1 mặt) hoặc
+            // multiple_faces (live 2 mặt) — danh tính KHÔNG lần nào được xác minh. Dùng /face-detect: cùng
+            // bộ dò với nhánh đếm mặt ảnh mốc của /face-verify, nên ảnh qua cửa này là ảnh face-check đọc được.
+            FaceDetectResult? detected = null;
+            try
+            {
+                detected = await _faceVerify.DetectAsync(key, ct);
+            }
+            catch (DownstreamServiceException ex)
+            {
+                // FAIL-OPEN (SEC-5): tới đây buổi đã giữ suất phỏng vấn và đồng hồ đang chạy — chặn ứng
+                // viên vì AIService của ta hỏng là phạt oan. Nhận ảnh như hành vi cũ; face-check về sau vẫn
+                // tự lộ mốc hỏng bằng identity_unverified cho HR.
+                _logger.LogWarning(ex,
+                    "AC2 enroll: AIService lỗi — CHƯA KIỂM ĐƯỢC SỐ KHUÔN MẶT trên ảnh mốc {Key} (candidate {CandidateId} campaign {CampaignId}); vẫn nhận ảnh (fail-open).",
+                    key, candidateId, campaignId);
+            }
+
+            if (detected is not null && detected.FaceCount != 1)
+            {
+                // Ảnh bị loại: KHÔNG đổi membership, KHÔNG đụng mốc cũ. Dọn object vừa upload + dòng sổ
+                // của nó (S3 trước, sổ sau — ngược lại là tái tạo BK25).
+                await DeleteReferenceObjectAsync(key, "ảnh mốc bị loại", ct);
+
+                var noFace = detected.FaceCount <= 0;
+                _logger.LogInformation(
+                    "AC2 enroll: loại ảnh mốc của candidate {CandidateId} campaign {CampaignId} — {FaceCount} khuôn mặt.",
+                    candidateId, campaignId, detected.FaceCount);
+                return BadRequest(new
+                {
+                    code = noFace ? ReferenceNoFaceCode : ReferenceMultipleFacesCode,
+                    faceCount = detected.FaceCount,
+                    error = noFace
+                        ? "Không thấy khuôn mặt nào trong ảnh. Hãy nhìn thẳng vào camera ở nơi đủ sáng rồi chụp lại."
+                        : $"Ảnh có {detected.FaceCount} khuôn mặt. Ảnh tham chiếu chỉ được có đúng một người — hãy chụp lại khi trong khung hình chỉ có bạn."
+                });
+            }
+
             membership.ReferenceImageKey = key;
             membership.UpdatedAt = DateTime.UtcNow;
             await _db.SaveChangesAsync(ct);
 
-            // DATA-2 "ảnh tham chiếu 1 bản/ứng viên/campaign": key deterministic THEO ĐUÔI FILE
-            // (BuildKey nối `Path.GetExtension`), nên enroll .jpg rồi enroll lại .png sinh HAI object
-            // trong khi membership chỉ trỏ được vào cái sau ⇒ cái trước thành mồ côi. Dọn bản bị thay
-            // thế ngay tại đây (best-effort): S3 trước, dòng sổ sau. S3 lỗi → GIỮ dòng sổ để
-            // FaceImagePurger dọn khi tới hạn, và KHÔNG làm hỏng lần enroll vừa thành công.
+            // DATA-2 "ảnh tham chiếu 1 bản/ứng viên/campaign": mốc cũ (key riêng của lần enroll trước, hoặc
+            // key deterministic thời trước AC2) chỉ bị dọn SAU KHI mốc mới đã được nhận và commit.
+            // Best-effort: S3 trước, dòng sổ sau. S3 lỗi → GIỮ dòng sổ để FaceImagePurger dọn khi tới
+            // hạn, và KHÔNG làm hỏng lần enroll vừa thành công.
             if (!string.IsNullOrWhiteSpace(previousKey) && previousKey != key)
-                await DeleteSupersededReferenceAsync(previousKey!, ct);
+                await DeleteReferenceObjectAsync(previousKey!, "ảnh tham chiếu cũ", ct);
 
             _logger.LogInformation(
-                "SEC-2 enroll: candidate {CandidateId} đặt ảnh tham chiếu campaign {CampaignId} (key {Key}).",
-                candidateId, campaignId, key);
+                "SEC-2 enroll: candidate {CandidateId} đặt ảnh tham chiếu campaign {CampaignId} (key {Key}, faces {FaceCount}).",
+                candidateId, campaignId, key, detected?.FaceCount.ToString() ?? "chưa kiểm");
             return NoContent();
         }
 
@@ -236,9 +285,9 @@ namespace Isas.CampaignService.Controllers
 
         // BK25 — ghi 1 dòng sổ cho object sinh trắc sắp đẩy lên S3 (DATA-3: có retention + purge).
         // Gọi TRƯỚC UploadAsync: bất biến của tính năng là "không object nào tồn tại mà không có dòng
-        // trỏ tới" (chi tiết ở FaceImage). Ảnh THAM CHIẾU dùng key deterministic nên enroll lại cùng
-        // đuôi file sẽ trùng key — khi đó chỉ dời CapturedAt (giữ đúng 1 dòng/1 object, hợp DATA-2)
-        // thay vì insert dòng thứ hai và vỡ UNIQUE(storage_key).
+        // trỏ tới" (chi tiết ở FaceImage). Từ AC2 ảnh THAM CHIẾU có key riêng mỗi lần enroll nên không
+        // còn trùng key; nhánh "đã có dòng" giữ lại làm lưới an toàn — trùng key thì chỉ dời CapturedAt
+        // (giữ đúng 1 dòng/1 object) thay vì insert dòng thứ hai và vỡ UNIQUE(storage_key).
         private async Task RecordImageAsync(
             FaceImageKind kind, string storageKey, Guid campaignId, Guid candidateId,
             Guid? sessionId, CancellationToken ct)
@@ -265,27 +314,28 @@ namespace Isas.CampaignService.Controllers
             await _db.SaveChangesAsync(ct);
         }
 
-        // DATA-2 — dọn ảnh tham chiếu ĐÃ BỊ THAY THẾ. Thứ tự bắt buộc: S3 trước, dòng sổ sau (ngược
-        // lại = bỏ lại ảnh khuôn mặt không ai trỏ tới = đúng con bug BK25). Best-effort: lần enroll
-        // vừa rồi ĐÃ thành công và đã commit, không được để việc dọn rác làm nó trả lỗi cho ứng viên.
-        private async Task DeleteSupersededReferenceAsync(string previousKey, CancellationToken ct)
+        // DATA-2 / AC2 — dọn MỘT object ảnh tham chiếu: mốc cũ đã bị thay thế, hoặc ảnh mới vừa bị loại.
+        // Thứ tự bắt buộc: S3 trước, dòng sổ sau (ngược lại = bỏ lại ảnh khuôn mặt không ai trỏ tới =
+        // đúng con bug BK25). Best-effort: lỗi S3 không được biến thành lỗi trả cho ứng viên — câu trả lời
+        // (204 / 400) đã được quyết định ở trên; object còn sót có dòng sổ nên purger nhặt khi tới hạn.
+        private async Task DeleteReferenceObjectAsync(string storageKey, string what, CancellationToken ct)
         {
             try
             {
-                await _file.DeleteAsync(previousKey, ct);
+                await _file.DeleteAsync(storageKey, ct);
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex,
-                    "DATA-2: xoá ảnh tham chiếu cũ '{Key}' thất bại — GIỮ dòng sổ để FaceImagePurger dọn khi tới hạn",
-                    previousKey);
+                    "DATA-2: xoá {What} '{Key}' thất bại — GIỮ dòng sổ để FaceImagePurger dọn khi tới hạn",
+                    what, storageKey);
                 return;   // KHÔNG xoá dòng sổ: mất dòng = mất dấu vết object vẫn còn trong S3
             }
 
-            await _db.FaceImages.Where(x => x.StorageKey == previousKey).ExecuteDeleteAsync(ct);
+            await _db.FaceImages.Where(x => x.StorageKey == storageKey).ExecuteDeleteAsync(ct);
         }
 
-        // Key S3 deterministic + giữ đuôi file gốc (fallback .jpg). GEN-5: lưu KEY, không full URL.
+        // Key S3 = prefix + đuôi file gốc (fallback .jpg). GEN-5: lưu KEY, không full URL.
         private static string BuildKey(string prefix, IFormFile image)
         {
             var ext = Path.GetExtension(image.FileName);

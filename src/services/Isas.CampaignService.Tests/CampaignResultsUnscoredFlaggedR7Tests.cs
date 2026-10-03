@@ -61,13 +61,15 @@ public class CampaignResultsUnscoredFlaggedR7Tests
         db.SaveChanges();
     }
 
-    private static void SeedMembership(CampaignDbContext db, Guid campaignId, Guid candidateId, string? fullName, string? email)
+    private static void SeedMembership(CampaignDbContext db, Guid campaignId, Guid candidateId, string? fullName, string? email,
+        Guid? sessionId = null)
     {
         db.CampaignMemberships.Add(new CampaignMembership
         {
             Id = Guid.NewGuid(),
             CampaignId = campaignId,
             CandidateId = candidateId,
+            SessionId = sessionId,
             FullName = fullName,
             Email = email,
             Status = MembershipStatus.Joined,
@@ -162,6 +164,9 @@ public class CampaignResultsUnscoredFlaggedR7Tests
         var c2 = Guid.NewGuid(); var s2 = Guid.NewGuid();
         SeedFlag(tdb.Db, campaign.Id, s2, c2, "paste");
         SeedFlag(tdb.Db, campaign.Id, s2, c2, "face_mismatch");
+        // AC2 — nhãn ô "Kết quả" nay theo trạng thái buổi; membership phải đang giữ s2 thì mới biết đây là
+        // lượt hiện tại (chưa có trạng thái ⇒ vẫn "Chưa chấm"). Các nhãn khác: AbandonStatusAc2Tests.
+        SeedMembership(tdb.Db, campaign.Id, c2, null, null, sessionId: s2);
 
         var export = await NewService(tdb.NewContext())
             .ExportCampaignResultsAsync(orgId, campaign.Id, "csv", default);
@@ -192,6 +197,7 @@ public class CampaignResultsUnscoredFlaggedR7Tests
 
         var c2 = Guid.NewGuid(); var s2 = Guid.NewGuid();
         SeedFlag(tdb.Db, campaign.Id, s2, c2, "multiple_faces");
+        SeedMembership(tdb.Db, campaign.Id, c2, null, null, sessionId: s2);   // AC2 — xem test CSV ở trên
 
         var export = await NewService(tdb.NewContext())
             .ExportCampaignResultsAsync(orgId, campaign.Id, "pdf", default);

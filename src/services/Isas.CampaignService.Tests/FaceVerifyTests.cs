@@ -245,16 +245,23 @@ public class FaceVerifyTests
         file.Setup(x => x.UploadAsync(It.IsAny<IFormFile>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((IFormFile _, string key, CancellationToken _) => key);
 
-        var expectedKey = $"campaigns/{campaign.Id}/candidates/{candidateId}/face-reference.jpg";
-        var result = await NewController(tdb.NewContext(), candidateId, file.Object, Mock.Of<IAiServiceFaceVerifyClient>())
+        // AC2 — đổi tiền đề có chủ đích: key ảnh mốc KHÔNG còn deterministic `.../face-reference.jpg`
+        // (upload đè lên đó rồi mới kiểm là phá mốc tốt đang có); mỗi lần enroll một key riêng có hậu tố
+        // Guid, basename vẫn bắt đầu bằng `face-reference`. Và enroll nay hỏi AIService đếm mặt ⇒ setup 1 mặt.
+        var ai = new Mock<IAiServiceFaceVerifyClient>();
+        ai.Setup(x => x.DetectAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new FaceDetectResult(1, new List<string>()));
+        var keyPattern = new System.Text.RegularExpressions.Regex(
+            $"^campaigns/{campaign.Id}/candidates/{candidateId}/face-reference-[0-9a-f]{{32}}\\.jpg$");
+        var result = await NewController(tdb.NewContext(), candidateId, file.Object, ai.Object)
             .Enroll(campaign.Id, sessionId, FakeImage(), default);
 
         Assert.IsType<NoContentResult>(result);
-        file.Verify(x => x.UploadAsync(It.IsAny<IFormFile>(), expectedKey, It.IsAny<CancellationToken>()), Times.Once);
+        file.Verify(x => x.UploadAsync(It.IsAny<IFormFile>(), It.Is<string>(k => keyPattern.IsMatch(k)), It.IsAny<CancellationToken>()), Times.Once);
 
         using var check = tdb.NewContext();
         var membership = Assert.Single(check.CampaignMemberships.Where(m => m.CampaignId == campaign.Id));
-        Assert.Equal(expectedKey, membership.ReferenceImageKey);
+        Assert.Matches(keyPattern, membership.ReferenceImageKey!);
     }
 
     // ── (5) ngoài thành viên campaign → 403 (không upload/không cờ) ─────────────────
