@@ -418,6 +418,10 @@ namespace Isas.CampaignService.Services
             // sinh câu hỏi) ⇒ chưa có buổi nào ⇒ không tăng. Cùng SaveChanges với SessionId mới bên dưới:
             // không có cửa sổ ghi SessionId mới mà quên đếm. (Hai request song song cùng ra một session
             // mới đều gán CÙNG giá trị tuyệt đối AttemptCount + 1 ⇒ không đếm đôi.)
+            // Một mốc cho cả hai field dưới: lần Start đầu tiên thì "lần đầu" và "lượt hiện tại" là MỘT thời
+            // điểm, hai lời gọi UtcNow riêng sẽ lệch nhau vài tick. Lấy SAU khi Interview trả về (sinh câu
+            // hỏi có thể mất vài giây) — kiểm mặt chỉ bắt đầu sau đó, neo sớm hơn là phồng thời lượng LUẬT 2.
+            var startedAt = DateTime.UtcNow;
             var isNewSession = membership.SessionId != session.SessionId;
             if (isNewSession)
             {
@@ -425,6 +429,10 @@ namespace Isas.CampaignService.Services
                 // AC2 — lý do bỏ ngang thuộc về buổi CŨ; lượt mới bắt đầu sạch, cùng SaveChanges với
                 // SessionId mới (không có cửa sổ "buổi mới mang lý do bỏ ngang của buổi trước").
                 membership.AbandonReason = null;
+                // Mốc của lượt NÀY. Đặt ở đây chứ không ở khối chuyển trạng thái bên dưới: ca R1 (membership
+                // còn InProgress nhưng Interview báo buổi cũ đã đóng ⇒ lượt mới) KHÔNG đi vào khối đó, nên
+                // đặt ở đó thì lượt mới vẫn mang mốc lượt cũ. Gán `=` (không `??=`): mỗi buổi mới một mốc.
+                membership.AttemptStartedAt = startedAt;
             }
             membership.SessionId = session.SessionId;
             // Deadline được chốt lần start đầu; HR đổi slot sau đó không được hồi tố session đang chạy.
@@ -432,12 +440,13 @@ namespace Isas.CampaignService.Services
             if (membership.InterviewStatus is null or InterviewProgressStatus.NotStarted or InterviewProgressStatus.Abandoned)
             {
                 membership.InterviewStatus = InterviewProgressStatus.InProgress;
-                // MON1-B1: mốc buổi thi bắt đầu — điểm neo cho sweeper heartbeat (B3) đối chiếu với
-                // face_images.captured_at. Chỉ đóng dấu khi ĐANG quan sát chuyển sang InProgress:
-                // resume (đã InProgress) không vào khối này ⇒ mốc gốc giữ nguyên; membership cũ
-                // (interview_started_at = null, có trước migration) resume cũng KHÔNG bị backdate về
-                // thời điểm resume — null = "không biết", trung thực hơn một mốc sai (BK23).
-                membership.InterviewStartedAt ??= DateTime.UtcNow;
+                // MON1-B1: mốc LẦN ĐẦU membership bắt đầu phỏng vấn (mốc phễu của analytics). Chỉ đóng dấu
+                // khi ĐANG quan sát chuyển sang InProgress: resume (đã InProgress) không vào khối này;
+                // membership cũ (interview_started_at = null, có trước migration) resume cũng KHÔNG bị
+                // backdate về thời điểm resume — null = "không biết" (BK23). `??=` có chủ đích: làm lại
+                // lượt 2 sau bỏ ngang đi vào khối này nhưng KHÔNG dời mốc — mốc lượt hiện tại là
+                // AttemptStartedAt (đặt ở khối isNewSession phía trên), sweeper LUẬT 2 neo vào đó.
+                membership.InterviewStartedAt ??= startedAt;
             }
             membership.UpdatedAt = DateTime.UtcNow;
             await _db.SaveChangesAsync(ct);

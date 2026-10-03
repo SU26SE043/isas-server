@@ -21,11 +21,11 @@ public record AdminRubricPreviewRequest(
     string? Seniority = null,
     string? SampleQuestionId = null,
     /// <summary>
-    /// <c>false</c> ⇒ KHÔNG bắt AI viết 3 bài mẫu, chỉ chấm <see cref="CustomAnswer"/> (bắt buộc có).
-    /// Mặc định <c>true</c> để hợp đồng cũ không đổi. Người chỉ muốn biết "hệ chấm TÔI thế nào"
-    /// không cần 3 bài AI (1 lượt sinh + 3 lượt chấm, 30–60s).
+    /// ⚠ BỎ QUA từ 2026-10-03 — chấm thử LUÔN chỉ chấm <see cref="CustomAnswer"/> (bắt buộc có), không
+    /// còn 3 bài AI. Giữ field vì DTO này <c>Disallow</c> khoá lạ: xoá đi thì FE bản cũ (còn gửi khoá này
+    /// trong lúc backend đã lên mà FE chưa lên) nhận 400 ở MỌI lượt chấm thử.
     /// </summary>
-    bool IncludeAiSamples = true,
+    bool IncludeAiSamples = false,
     /// <summary>
     /// Số đo cách nói của CHÍNH bản ghi người dùng (từ <c>preview/transcribe</c>). Có nó, bài của họ
     /// được chấm với khối số đo thật (F11) và tiêu chí đo-bằng-máy (trôi chảy) được đo luôn — lần đầu

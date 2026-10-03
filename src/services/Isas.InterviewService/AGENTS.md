@@ -130,7 +130,7 @@ CvAnalysisResponse  🔜 {
 
 **`GET /sessions/{sessionId}/answers/{answerId}/audio`** — Stream audio câu trả lời của chính candidate; `AnswerResponse.audioUrl` trỏ tới route này. Không có audio/answer/session → **404**; session của người khác → **403**. Không trả SeaweedFS object key.
 
-**`POST /sessions/{sessionId}/focus-events`** — ✅ 2026-09-14 (coaching, BC-6 ngoại lệ). Ghi một tín hiệu mất tập trung. Body `{ signalType: "tab_switch"|"paste"|"focus_lost", note?: string }`. **204** kể cả khi không lưu gì (buổi tắt theo dõi / B2B / đã kết thúc / chạm trần 500 dòng — đều no-op, không lỗi). **400** tín hiệu ngoài whitelist · **403** không phải buổi của mình · **404** buổi không tồn tại.
+**`POST /sessions/{sessionId}/focus-events`** — ✅ 2026-09-14 (coaching, BC-6 ngoại lệ). Ghi một tín hiệu mất tập trung. Body `{ signalType: "tab_switch"|"paste"|"focus_lost"|"camera_blocked", note?: string }` (`camera_blocked` từ 2026-10-03 = FE thấy khung webcam tối/bị che; `no_face`/`multiple_faces` chỉ server ghi → 400). **204** kể cả khi không lưu gì (buổi tắt theo dõi / B2B / đã kết thúc / chạm trần 500 dòng — đều no-op, không lỗi). **400** tín hiệu ngoài whitelist · **403** không phải buổi của mình · **404** buổi không tồn tại.
 
 **`POST /sessions/{sessionId}/face-check`** — ✅ 2026-09-17 (coaching, BC-6 ngoại lệ mở rộng — ĐẾM MẶT detect-only, KHÔNG so khớp danh tính). `multipart/form-data`, field `image` (JPEG ≤2MB). Ghi sổ `practice_face_images` (S3 key) → hỏi AIService `/face-detect` → **xoá ảnh ngay** (S3 trước, dòng sau; hụt thì giữ dòng cho purger) → ghi cờ `no_face`/`multiple_faces` vào cùng bảng `practice_focus_events` (chỉ server ghi được hai giá trị này). **200** `{ faceCount, signals[] }` · **204** no-op (buổi tắt theo dõi/B2B/đã kết thúc — KHÔNG upload KHÔNG gọi AI) · **400** ảnh rỗng/quá lớn/không phải JPEG · **403**/**404** như focus-events · **502**/**504** AIService lỗi/hết giờ. Purger `PracticeFaceImagePurger` chỉ dọn phần sót, mặc định TẮT (`FaceImageRetention__Enabled=true`, nên `RetentionDays=1`).
 
@@ -278,7 +278,7 @@ focus_tracking_enabled bool ✅ 2026-09-14 (migration `AddPracticeFocusEventsB2c
 ```
 id           uuid          PK
 session_id   uuid          FK → practice_sessions (Cascade)
-signal_type  varchar(32)   CHECK IN ('tab_switch','paste','focus_lost') — whitelist ĐÓNG (không có camera_blocked/monitoring_gap, B2C không giám sát webcam)
+signal_type  varchar(32)   CHECK IN ('tab_switch','paste','focus_lost','no_face','multiple_faces','camera_blocked') — whitelist ĐÓNG (không có monitoring_gap; camera_blocked từ 2026-10-03)
 note         varchar(256)? tuỳ chọn, cắt ở C# (SQLite không ép varchar)
 occurred_at  timestamptz   server tự đóng dấu, KHÔNG nhận mốc từ client
 ```

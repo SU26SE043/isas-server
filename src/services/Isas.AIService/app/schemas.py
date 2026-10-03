@@ -855,7 +855,7 @@ class FaceVerifyResponse(BaseModel):
     faceCount: int                # số mặt trên ảnh LIVE
     match: bool                   # score ≥ threshold VÀ đúng 1 mặt
     score: float                  # cosine similarity ref↔live (0 nếu không so được)
-    signals: list[str]            # ⊂ no_face / multiple_faces / face_mismatch (cờ cho HR)
+    signals: list[str]            # ⊂ no_face / multiple_faces / face_mismatch / identity_unverified (cờ cho HR)
 
 
 # ── /face-detect — B2C coaching: ĐẾM MẶT, KHÔNG so khớp danh tính (BC-6 ngoại lệ) ──────

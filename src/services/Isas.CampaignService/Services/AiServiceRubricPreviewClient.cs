@@ -26,8 +26,9 @@ namespace Isas.CampaignService.Services
     }
 
     /// <summary>
-    /// CAMP-19 — gọi AIService <c>POST /api/v1/score-preview</c>: sinh 3 bài mẫu rồi chấm CHÍNH CHÚNG
-    /// bằng đúng bộ chấm thật.
+    /// CAMP-19 — gọi AIService <c>POST /api/v1/score-preview</c>: chấm câu trả lời HR tự nhập bằng đúng
+    /// bộ chấm thật. Từ 2026-10-03 LUÔN gửi <c>includeAiSamples = false</c>: không bắt AI viết 3 bài
+    /// Yếu/Khá/Xuất sắc nữa (1 lượt chấm thay vì 1 lượt sinh + 4 lượt chấm).
     ///
     /// <para>Đồng bộ HTTP, KHÔNG qua hàng đợi: đi đường queue thì phải dựng <c>practice_answers</c> giả
     /// để callback có chỗ ghi — tức THÊM sai khác giữa chấm thử và chấm thật chứ không bớt.</para>
@@ -67,6 +68,7 @@ namespace Isas.CampaignService.Services
                     question,
                     sampleAnswer,
                     customAnswer,
+                    includeAiSamples = false,
                     targetWordCount,
                     criteria = criteria.Select(c => new
                     {

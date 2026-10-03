@@ -23,6 +23,17 @@ public class ScoringJobPublisher : IScoringJobPublisher
         };
     }
 
+    /// <summary>
+    /// Thân message đẩy lên <c>scoring_pipeline_queue</c>. Tách riêng để test khoá ĐÚNG cách tuần tự
+    /// hoá mà hàng đợi nhận (<c>ScoringJobWireFixtureTests</c> sinh file mẫu cho test Python từ hàm này).
+    ///
+    /// <para>⚠ CỐ Ý không truyền options ⇒ <c>JsonSerializerOptions.Default</c> = khoá <b>PascalCase</b>
+    /// (<c>{"Criteria":[{"Levels":[{"Score":0,"Descriptor":"…"}]}]}</c>). Worker Python đọc cả hai casing
+    /// (<c>app/wire.py</c>) và còn nhiều khoá khác đang dựa vào PascalCase — đổi sang camelCase ở đây là
+    /// đổi hợp đồng với cả worker lẫn republisher, không phải "dọn cho gọn".</para>
+    /// </summary>
+    public static string Serialize(ScoringJob job) => JsonSerializer.Serialize(job);
+
     public async Task PublishAsync(ScoringJob job, CancellationToken ct = default)
     {
         try
@@ -46,7 +57,7 @@ public class ScoringJobPublisher : IScoringJobPublisher
                 },
                 cancellationToken: ct);
 
-            var json = JsonSerializer.Serialize(job);
+            var json = Serialize(job);
             var body = Encoding.UTF8.GetBytes(json);
 
             // Cấu hình Persistent kiểu mới trực tiếp qua object initializer

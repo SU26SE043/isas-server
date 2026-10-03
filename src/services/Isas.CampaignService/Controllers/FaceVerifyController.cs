@@ -12,10 +12,11 @@ namespace Isas.CampaignService.Controllers
     /// SEC-2 — cổng xác minh khuôn mặt (face-verify) cho ứng viên B2B. 2 endpoint (JWT Candidate + phải là
     /// thành viên campaign — mirror <see cref="SessionFlagController"/>):
     ///  1) <c>face-enroll</c>: upload ảnh THAM CHIẾU vào key riêng → AIService đếm mặt (AC2) → ĐÚNG 1 mặt
-    ///     thì gán <c>CampaignMembership.ReferenceImageKey</c>; 0 / &gt;1 mặt → 400, mốc cũ giữ nguyên;
-    ///     AIService lỗi → vẫn nhận (fail-open, SEC-5).
+    ///     thì gán <c>CampaignMembership.ReferenceImageKey</c>; 0 / &gt;1 mặt / ảnh không giải mã được → 400,
+    ///     mốc cũ giữ nguyên; AIService lỗi HẠ TẦNG (5xx/timeout) → vẫn nhận (fail-open, SEC-5).
     ///  2) <c>face-check</c>: chỉ khi campaign bật <c>FaceVerifyEnabled</c>; upload ảnh LIVE → S3 KEY →
-    ///     gọi AIService so khớp → mỗi tín hiệu (no_face/multiple_faces/face_mismatch) → 1 cờ session_flags cho HR.
+    ///     gọi AIService so khớp → mỗi tín hiệu (no_face/multiple_faces/face_mismatch/identity_unverified) →
+    ///     1 cờ session_flags cho HR. Ảnh không giải mã được: mốc → identity_unverified, live → no_face.
     /// D13/SEC-5: CHỈ FLAG cho HR, KHÔNG auto-chặn; thiếu ảnh tham chiếu ≠ gian lận (cờ identity_unverified).
     /// AIService đọc CHUNG bucket SeaweedFS → chỉ truyền KEY (GEN-5), không truyền ảnh.
     ///
@@ -48,6 +49,11 @@ namespace Isas.CampaignService.Controllers
         // AC2 — mã lỗi máy đọc được khi ảnh mốc bị loại (FE map ra câu hướng dẫn chụp lại).
         internal const string ReferenceNoFaceCode = "REFERENCE_NO_FACE";
         internal const string ReferenceMultipleFacesCode = "REFERENCE_MULTIPLE_FACES";
+        internal const string ReferenceUnreadableCode = "REFERENCE_UNREADABLE";
+
+        // Note cờ khi AIService không giải mã được ảnh (422 IMAGE_UNREADABLE) ở face-check.
+        internal const string ReferenceUnreadableNote = "Ảnh mốc không đọc được — ứng viên cần chụp lại ảnh tham chiếu.";
+        internal const string LiveUnreadableNote = "Ảnh kiểm mặt không đọc được (tệp ảnh hỏng hoặc sai định dạng).";
 
         // Tín hiệu DANH TÍNH (mirror SessionFlagController) — lưu khi anti_cheat HOẶC face_verify bật.
         private static readonly HashSet<string> IdentitySignals = new(StringComparer.OrdinalIgnoreCase)
@@ -94,11 +100,30 @@ namespace Isas.CampaignService.Controllers
             {
                 detected = await _faceVerify.DetectAsync(key, ct);
             }
+            catch (ImageUnreadableException)
+            {
+                // Ảnh KHÔNG giải mã được (AIService 422 IMAGE_UNREADABLE) — lỗi của DỮ LIỆU, không phải hạ
+                // tầng ⇒ KHÔNG fail-open. Dev 03/10: 4 byte chữ ký JPEG + rác từng ra 502 ⇒ rơi vào nhánh
+                // fail-open dưới ⇒ mốc rác được nhận (204), mọi face-check sau đó 502, HR 0 cờ. Dọn y như ca
+                // 0 / >1 mặt: object mới + dòng sổ (S3 trước, sổ sau); membership + mốc cũ không đụng.
+                await DeleteReferenceObjectAsync(key, "ảnh mốc không đọc được", ct);
+                _logger.LogInformation(
+                    "AC2 enroll: loại ảnh mốc của candidate {CandidateId} campaign {CampaignId} — ảnh không giải mã được.",
+                    candidateId, campaignId);
+                return BadRequest(new
+                {
+                    code = ReferenceUnreadableCode,
+                    faceCount = (int?)null,   // chưa đọc được ảnh ⇒ KHÔNG biết số mặt (0 nghĩa là "đọc rồi, không thấy")
+                    error = "Không đọc được ảnh vừa chụp (tệp ảnh hỏng hoặc sai định dạng). Hãy chụp lại."
+                });
+            }
             catch (DownstreamServiceException ex)
             {
-                // FAIL-OPEN (SEC-5): tới đây buổi đã giữ suất phỏng vấn và đồng hồ đang chạy — chặn ứng
-                // viên vì AIService của ta hỏng là phạt oan. Nhận ảnh như hành vi cũ; face-check về sau vẫn
-                // tự lộ mốc hỏng bằng identity_unverified cho HR.
+                // FAIL-OPEN (SEC-5) — CHỈ cho lỗi HẠ TẦNG (5xx / timeout / không gọi được): tới đây buổi đã
+                // giữ suất phỏng vấn và đồng hồ đang chạy, chặn ứng viên vì AIService của ta hỏng là phạt oan.
+                // Mốc chưa kiểm này nếu hỏng vẫn LỘ RA ở face-check: AIService nhìn mốc mỗi khi live có đúng 1
+                // mặt — mốc 0/>1 mặt → 200 kèm identity_unverified; mốc không giải mã được → 422 → nhánh
+                // ImageUnreadableException ở Check ghi identity_unverified. Cả hai thành cờ cho HR.
                 _logger.LogWarning(ex,
                     "AC2 enroll: AIService lỗi — CHƯA KIỂM ĐƯỢC SỐ KHUÔN MẶT trên ảnh mốc {Key} (candidate {CandidateId} campaign {CampaignId}); vẫn nhận ảnh (fail-open).",
                     key, candidateId, campaignId);
@@ -187,6 +212,31 @@ namespace Isas.CampaignService.Controllers
             {
                 result = await _faceVerify.VerifyAsync(membership.ReferenceImageKey!, liveKey, null, ct);
             }
+            catch (ImageUnreadableException ex) when (ex.Image == ImageUnreadableException.Reference)
+            {
+                // Mốc KHÔNG giải mã được (thường do enroll lọt lúc AIService hỏng hạ tầng — fail-open). Đây là
+                // lỗi ở ẢNH MỐC, không phải người đang ngồi trước camera ⇒ identity_unverified ("chưa xác minh
+                // được"), tuyệt đối không face_mismatch. Trả 200 như nhánh "chưa có ảnh tham chiếu" ngay trên —
+                // trước đây ca này ra 502 và HR không nhận được cờ nào.
+                return await UnreadableFlagAsync(campaign, sessionId, candidateId.Value,
+                    "identity_unverified", ReferenceUnreadableNote, ex, ct);
+            }
+            catch (ImageUnreadableException ex) when (ex.Image == ImageUnreadableException.Live)
+            {
+                // Ảnh LIVE không giải mã được — lượt kiểm này KHÔNG thấy mặt nào ⇒ no_face cho HR. Không ghi cờ
+                // thì gửi ảnh rác mỗi nhịp là cách né kiểm mặt: ảnh live đã vào sổ face_images (BK25) TRƯỚC khi
+                // kiểm, nên cả HR lẫn MonitoringGap đều tưởng buổi vẫn được giám sát đều.
+                return await UnreadableFlagAsync(campaign, sessionId, candidateId.Value,
+                    "no_face", LiveUnreadableNote, ex, ct);
+            }
+            catch (ImageUnreadableException ex)
+            {
+                // Tên ảnh lạ = AIService đổi hợp đồng mà Campaign chưa theo. Không đoán cờ — báo như lỗi hạ tầng.
+                _logger.LogError(ex,
+                    "SEC-2 check: AIService báo ảnh '{Image}' không giải mã được — tên ảnh lạ (candidate {CandidateId} campaign {CampaignId}).",
+                    ex.Image, candidateId, campaignId);
+                return StatusCode(StatusCodes.Status502BadGateway, new { error = ex.Message });
+            }
             catch (DownstreamServiceException ex)
             {
                 // Lỗi hạ tầng AIService (timeout/5xx/body hỏng) — KHÔNG phải lỗi của ứng viên/HR, và KHÔNG
@@ -215,6 +265,24 @@ namespace Isas.CampaignService.Controllers
         }
 
         // ── helpers ──────────────────────────────────────────────────────────────────
+
+        // Face-check: AIService không giải mã được một trong hai ảnh → 1 cờ + 200 kèm signals (FE hiện thông
+        // báo theo signals). FaceCount = 0 như nhánh "chưa có ảnh tham chiếu": lượt này không so được mặt nào.
+        private async Task<IActionResult> UnreadableFlagAsync(
+            Campaign campaign, Guid sessionId, Guid candidateId,
+            string signal, string note, ImageUnreadableException ex, CancellationToken ct)
+        {
+            await RecordFlagsAsync(campaign, sessionId, candidateId, new[] { signal }, note, ct);
+            _logger.LogWarning(ex,
+                "SEC-2 check: ảnh '{Image}' không giải mã được (candidate {CandidateId} campaign {CampaignId}) → cờ {Signal}.",
+                ex.Image, candidateId, campaign.Id, signal);
+            return Ok(new FaceCheckResponse
+            {
+                Match = false,
+                FaceCount = 0,
+                Signals = new List<string> { signal }
+            });
+        }
 
         // Membership của candidate trong campaign (kèm Campaign nav). Không tồn tại → 403 (mirror SessionFlagController).
         // Campaign không tồn tại → 404. DB16: membership ở bảng campaign_membership (ReferenceImageKey nằm đây).

@@ -197,10 +197,15 @@ namespace Isas.CampaignService.Services
             // RabbitMQ). Chờ terminal để KHÔNG gắn oan buổi đang chạy / vừa nộp (độ trễ event, SỰ THẬT
             // ĐÃ ĐO #5). Cận trên `m.UpdatedAt >= since` dùng lại LookbackHours (buổi kết thúc quá lâu
             // thì HR đã xem / không xử lý được). DbSet có filter soft-delete (DB13).
+            // Neo vào mốc của LƯỢT ĐANG GIỮ (attempt_started_at), KHÔNG phải mốc lần đầu
+            // (interview_started_at): sau một lượt làm lại (ATT1) mốc lần đầu là giờ lượt 1, đo thời lượng
+            // lượt 2 từ đó là cộng cả lượt 1 + khoảng nghỉ ⇒ lượt 2 ngắn (chưa tới nhịp kiểm đầu) vượt
+            // ngưỡng ⇒ cờ "0 ảnh suốt buổi" oan, số phút trong note sai. Dòng có trước cột mà không chắc
+            // chỉ một lượt để null ⇒ bị bỏ qua (thà không đo còn hơn đo bằng mốc sai — BK23).
             var terminals = await db.CampaignMemberships
                 .Where(m => m.SessionId != null
                     && m.CandidateId != null
-                    && m.InterviewStartedAt != null
+                    && m.AttemptStartedAt != null
                     && (m.InterviewStatus == InterviewProgressStatus.Completed
                         || m.InterviewStatus == InterviewProgressStatus.Abandoned)
                     && m.UpdatedAt >= since
@@ -210,7 +215,7 @@ namespace Isas.CampaignService.Services
                     SessionId = m.SessionId!.Value,
                     m.CampaignId,
                     CandidateId = m.CandidateId!.Value,
-                    StartedAt = m.InterviewStartedAt!.Value,
+                    StartedAt = m.AttemptStartedAt!.Value,
                     m.UpdatedAt
                 })
                 .ToListAsync(ct);

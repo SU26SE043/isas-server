@@ -16,6 +16,8 @@ namespace Isas.CampaignService.Tests;
 /// </summary>
 public class RubricPreviewTests
 {
+    /// <summary>2026-10-03 — chấm thử CHỈ chấm câu trả lời HR tự nhập ⇒ mọi lượt phải có nó.</summary>
+    private const string Ans = "Em dùng POST, kiểm tra dữ liệu đầu vào, lưu DB rồi trả 201 Created.";
     private const string D0 = "CÓ: không nêu được ý nào | CÒN THIẾU: toàn bộ nội dung";
     private const string DTop = "CÓ: nêu đủ ý, ví dụ, đánh đổi | CÒN THIẾU: không đáng kể";
 
@@ -31,7 +33,7 @@ public class RubricPreviewTests
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<int>(),
                 It.IsAny<IReadOnlyList<PreviewCriterionInput>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new RubricPreviewResult(
-                new[] { "Weak", "Good", "Excellent" }.Select(b => new PreviewSample(
+                new[] { "Custom" }.Select(b => new PreviewSample(
                     b, $"bài {b}", 160,
                     new List<PreviewSampleScore> { new(criterionId, score, score, "vì thế này") })).ToList(),
                 PromptVersion: 4, LengthParityWarning: false));
@@ -138,7 +140,7 @@ public class RubricPreviewTests
 
         await Assert.ThrowsAnyAsync<Exception>(() =>
             NewService(tdb.NewContext(), credits: credits.Object)
-                .RunAsync(caller, owner, camp.Id, new RubricPreviewRequest(), default));
+                .RunAsync(caller, owner, camp.Id, new RubricPreviewRequest { CustomAnswer = Ans }, default));
 
         credits.VerifyNoOtherCalls();
 
@@ -160,7 +162,7 @@ public class RubricPreviewTests
         var credits = new Mock<ICreditReservationClient>(MockBehavior.Strict);
 
         var res = await NewService(tdb.NewContext(), AiThatWorks(cr.Id).Object, credits.Object)
-            .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest(), default);
+            .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest { CustomAnswer = Ans }, default);
 
         Assert.False(res.Billed);
         Assert.Equal("Succeeded", res.Status);
@@ -186,7 +188,7 @@ public class RubricPreviewTests
             .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
 
         var res = await NewService(tdb.NewContext(), AiThatWorks(cr.Id).Object, credits.Object)
-            .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest { ConfirmBilled = true }   /* REV-BE R3: lượt tính phí phải xác nhận */, default);
+            .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest { CustomAnswer = Ans, ConfirmBilled = true }   /* REV-BE R3: lượt tính phí phải xác nhận */, default);
 
         Assert.True(res.Billed);
         credits.Verify(x => x.ReserveAsync("Org", owner, It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Once);
@@ -210,7 +212,7 @@ public class RubricPreviewTests
 
         var credits = new Mock<ICreditReservationClient>(MockBehavior.Strict);
         var res = await NewService(tdb.NewContext(), AiThatWorks(cr.Id).Object, credits.Object)
-            .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest(), default);
+            .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest { CustomAnswer = Ans }, default);
 
         Assert.False(res.Billed);          // 0 Succeeded của câu này ⇒ vẫn free dù đã hỏng 3 lần (T6: 1 free/câu)
         Assert.Equal(0, res.FreeRunsRemaining);
@@ -234,7 +236,7 @@ public class RubricPreviewTests
 
         var credits = new Mock<ICreditReservationClient>(MockBehavior.Strict);
         var res = await NewService(tdb.NewContext(), AiThatWorks(cr.Id).Object, credits.Object)
-            .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest(), default);
+            .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest { CustomAnswer = Ans }, default);
 
         Assert.False(res.Billed);
         Assert.Equal(2, res.RubricVersion);
@@ -255,7 +257,7 @@ public class RubricPreviewTests
         var credits = new Mock<ICreditReservationClient>(MockBehavior.Strict);
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             NewService(tdb.NewContext(), AiThatWorks(cr.Id).Object, credits.Object)
-                .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest(), default));
+                .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest { CustomAnswer = Ans }, default));
         credits.VerifyNoOtherCalls();
     }
 
@@ -272,7 +274,7 @@ public class RubricPreviewTests
         await tdb.Db.SaveChangesAsync();
 
         var res = await NewService(tdb.NewContext(), AiThatWorks(cr.Id).Object)
-            .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest(), default);
+            .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest { CustomAnswer = Ans }, default);
 
         Assert.Equal("Succeeded", res.Status);
         using var check = tdb.NewContext();
@@ -304,7 +306,7 @@ public class RubricPreviewTests
 
         await Assert.ThrowsAsync<DownstreamServiceException>(() =>
             NewService(tdb.NewContext(), ai.Object, credits.Object)
-                .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest { ConfirmBilled = true }   /* REV-BE R3: lượt tính phí phải xác nhận */, default));
+                .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest { CustomAnswer = Ans, ConfirmBilled = true }   /* REV-BE R3: lượt tính phí phải xác nhận */, default));
 
         using var check = tdb.NewContext();
         var run = await check.RubricPreviewRuns.OrderByDescending(r => r.CreatedAt).FirstAsync();
@@ -333,7 +335,7 @@ public class RubricPreviewTests
 
         await Assert.ThrowsAsync<InsufficientOrgCreditException>(() =>
             NewService(tdb.NewContext(), AiThatWorks(cr.Id).Object, credits.Object)
-                .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest { ConfirmBilled = true }   /* REV-BE R3: lượt tính phí phải xác nhận */, default));
+                .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest { CustomAnswer = Ans, ConfirmBilled = true }   /* REV-BE R3: lượt tính phí phải xác nhận */, default));
 
         using var check = tdb.NewContext();
         Assert.Empty(await check.RubricPreviewRuns.Where(r => r.Status == RubricPreviewStatus.Running).ToListAsync());
@@ -349,38 +351,72 @@ public class RubricPreviewTests
         var (camp, cr) = await SeedReadyAsync(tdb, owner);
 
         var res = await NewService(tdb.NewContext(), AiThatWorks(cr.Id).Object)
-            .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest(), default);
+            .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest { CustomAnswer = Ans }, default);
 
         Assert.Equal(RubricFingerprint.Compute(new[] { WithLevels(cr) }), res.RubricFingerprint);
         Assert.Equal(1, res.RubricVersion);
         Assert.Equal(4, res.PromptVersion);
         // v1: bài mẫu là văn bản ⇒ KHÔNG có số đo cách nói (F11). Cờ cấu trúc, không giấu.
         Assert.False(res.DeliveryMetricsAvailable);
-        Assert.Equal(3, res.Samples.Count);
-        Assert.Equal(new[] { "Weak", "Good", "Excellent" }, res.Samples.Select(s => s.Band));
+        // 2026-10-03: chỉ còn bài HR tự nhập — không còn 3 bài AI Yếu/Khá/Xuất sắc.
+        Assert.Equal("Custom", Assert.Single(res.Samples).Band);
         // Thước đo ĐÃ DÙNG đi kèm kết quả (snapshot), không phải bộ hiện tại.
         Assert.Equal(new[] { 0, 5 }, Assert.Single(res.Rubric).Levels.Select(l => l.Score));
     }
 
-    // Δ (kỳ vọng vs thật) là số đo DUY NHẤT về độ chệch tự-khen-văn-mình mà một model đơn cho được.
     [Fact]
-    public async Task Bao_cao_ky_vong_vs_thuc_te()
+    public async Task Bao_cao_diem_bai_cua_HR_theo_tung_tieu_chi()
     {
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var (camp, cr) = await SeedReadyAsync(tdb, owner);
 
-        // Thang 2 mốc {0,5}: kỳ vọng Weak = mốc 0, Excellent = mốc 5. AI chấm cả 3 bài đều 5 điểm
-        // ⇒ bài Weak có Δ = +100 điểm phần trăm: model đang tự khen văn nó viết.
         var res = await NewService(tdb.NewContext(), AiThatWorks(cr.Id, score: 5).Object)
-            .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest(), default);
+            .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest { CustomAnswer = Ans }, default);
 
-        var weak = res.Samples.First(s => s.Band == "Weak");
-        Assert.Equal(0m, weak.ExpectedWeightedPct);
-        Assert.Equal(100m, weak.ActualWeightedPct);
-        Assert.Equal(0, Assert.Single(weak.Scores).ExpectedLevel);
-        Assert.Equal(5m, Assert.Single(weak.Scores).ActualScore);
-        Assert.Equal("Chuyên môn", Assert.Single(weak.Scores).CriterionName);
+        var mine = Assert.Single(res.Samples);
+        Assert.Equal("Custom", mine.Band);
+        Assert.Equal(100m, mine.ActualWeightedPct);
+        Assert.Equal(5m, Assert.Single(mine.Scores).ActualScore);
+        Assert.Equal("Chuyên môn", Assert.Single(mine.Scores).CriterionName);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task Khong_co_cau_tra_loi_thi_400_khong_row_khong_goi_AI_khong_cham_Payment(string? answer)
+    {
+        // Chấm thử nay CHỈ chấm câu trả lời HR tự nhập. Trống ⇒ 400 TRƯỚC insert row/quota/credit (I7):
+        // để lọt xuống thì một lượt tính phí bị trừ credit mà không có bài nào để chấm.
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var (camp, cr) = await SeedReadyAsync(tdb, owner);
+        var ai = AiThatWorks(cr.Id);
+        var credits = new Mock<ICreditReservationClient>(MockBehavior.Strict);
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            NewService(tdb.NewContext(), ai.Object, credits.Object)
+                .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest { CustomAnswer = answer, ConfirmBilled = true }, default));
+
+        Assert.Empty(tdb.Db.RubricPreviewRuns.ToList());
+        ai.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Cau_tra_loi_duoc_cat_khoang_trang_truoc_khi_gui_AI()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var (camp, cr) = await SeedReadyAsync(tdb, owner);
+        var ai = AiThatWorks(cr.Id);
+
+        await NewService(tdb.NewContext(), ai.Object)
+            .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest { CustomAnswer = "  " + Ans + "\n " }, default);
+
+        ai.Verify(x => x.RunAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
+            It.IsAny<string>(), It.IsAny<string?>(), Ans, It.IsAny<int>(),
+            It.IsAny<IReadOnlyList<PreviewCriterionInput>>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -392,7 +428,7 @@ public class RubricPreviewTests
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
             NewService(tdb.NewContext(), AiThatWorks(cr.Id).Object)
-                .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest { QuestionId = Guid.NewGuid() }, default));
+                .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest { CustomAnswer = Ans, QuestionId = Guid.NewGuid() }, default));
     }
 
     [Fact]

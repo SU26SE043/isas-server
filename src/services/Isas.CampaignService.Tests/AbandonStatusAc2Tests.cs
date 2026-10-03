@@ -232,11 +232,15 @@ public class AbandonStatusAc2Tests
     }
 
     private static CampaignMembership Member(CampaignTestDb t, Guid campaignId, Guid candidateId, Guid? sessionId,
-        InterviewProgressStatus? status, string? reason = null, DateTime? startedAt = null)
+        InterviewProgressStatus? status, string? reason = null, DateTime? startedAt = null,
+        DateTime? firstStartedAt = null)
     {
+        // startedAt = mốc lượt đang giữ (attempt_started_at); firstStartedAt = mốc lần đầu
+        // (interview_started_at), bỏ trống ⇒ trùng startedAt (membership một lượt).
         var m = CampaignTestDb.NewMembership(campaignId, candidateId, sessionId: sessionId, interviewStatus: status);
         m.AbandonReason = reason;
-        m.InterviewStartedAt = startedAt;
+        m.AttemptStartedAt = startedAt;
+        m.InterviewStartedAt = firstStartedAt ?? startedAt;
         t.Db.CampaignMemberships.Add(m);
         t.Db.SaveChanges();
         return m;
@@ -251,8 +255,11 @@ public class AbandonStatusAc2Tests
         var cand = Guid.NewGuid();
         var s1 = Guid.NewGuid();   // lượt 1 — bỏ ngang, đã có cờ
         var s2 = Guid.NewGuid();   // lượt 2 — đang làm, cũng có cờ
+        // Hai mốc KHÁC nhau: interviewStartedAt của dòng là mốc của CHÍNH buổi đó (lượt 2), không phải mốc
+        // lần đầu (lượt 1, 26 giây trước — đúng hình dạng đo được trên dev 03/10).
+        var firstStarted = new DateTime(2026, 10, 3, 1, 1, 37, DateTimeKind.Utc);
         var started = new DateTime(2026, 10, 3, 1, 2, 3, DateTimeKind.Utc);
-        Member(t, camp.Id, cand, s2, InterviewProgressStatus.Abandoned, "no_scored_answer", started);
+        Member(t, camp.Id, cand, s2, InterviewProgressStatus.Abandoned, "no_scored_answer", started, firstStarted);
         Flag(t, camp.Id, s1, cand);
         Flag(t, camp.Id, s2, cand);
 
@@ -269,6 +276,27 @@ public class AbandonStatusAc2Tests
         Assert.Null(old.InterviewStatus);       // KHÔNG mượn trạng thái lượt đang giữ
         Assert.Null(old.AbandonReason);
         Assert.Null(old.InterviewStartedAt);
+    }
+
+    // Dòng có trước cột, không chắc chỉ một lượt (attempt_started_at NULL): trả null = "không biết" —
+    // KHÔNG lấy mốc lần đầu thế vào (sau một lượt làm lại, đó là giờ của buổi KHÁC).
+    [Fact]
+    public async Task Results_LuotHienTai_MocLuotKhongBiet_TraNull_KhongMuonMocLanDau()
+    {
+        using var t = new CampaignTestDb();
+        var orgId = Guid.NewGuid();
+        var camp = SeedCampaign(t, orgId);
+        var cand = Guid.NewGuid();
+        var s2 = Guid.NewGuid();
+        Member(t, camp.Id, cand, s2, InterviewProgressStatus.InProgress, startedAt: null,
+            firstStartedAt: new DateTime(2026, 9, 13, 12, 54, 22, DateTimeKind.Utc));
+        Flag(t, camp.Id, s2, cand);
+
+        var res = await NewService(t.NewContext()).GetCampaignResultsAsync(orgId, camp.Id, default);
+
+        var row = Assert.Single(res.UnscoredFlagged);
+        Assert.True(row.IsLatestAttempt);
+        Assert.Null(row.InterviewStartedAt);
     }
 
     [Fact]

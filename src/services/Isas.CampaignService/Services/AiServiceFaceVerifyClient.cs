@@ -1,4 +1,6 @@
+using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
@@ -48,6 +50,7 @@ namespace Isas.CampaignService.Services
 
                 if (!resp.IsSuccessStatusCode)
                 {
+                    await ThrowIfImageUnreadableAsync(resp, "/face-verify", ct);
                     _logger.LogWarning("AIService /face-verify → {Status}", resp.StatusCode);
                     throw new DownstreamServiceException(
                         $"AIService face-verify trả về {(int)resp.StatusCode}.");
@@ -66,6 +69,10 @@ namespace Isas.CampaignService.Services
             catch (DownstreamServiceException)
             {
                 throw;
+            }
+            catch (ImageUnreadableException)
+            {
+                throw;   // lỗi DỮ LIỆU — không được bị khối dưới đổi thành "lỗi hạ tầng"
             }
             catch (Exception ex)
             {
@@ -93,6 +100,7 @@ namespace Isas.CampaignService.Services
 
                 if (!resp.IsSuccessStatusCode)
                 {
+                    await ThrowIfImageUnreadableAsync(resp, "/face-detect", timeout.Token);
                     _logger.LogWarning("AIService /face-detect → {Status} sau {Elapsed}ms",
                         resp.StatusCode, started.ElapsedMilliseconds);
                     throw new DownstreamServiceException(
@@ -112,6 +120,10 @@ namespace Isas.CampaignService.Services
             {
                 throw;
             }
+            catch (ImageUnreadableException)
+            {
+                throw;   // ảnh rác KHÔNG phải lỗi hạ tầng — đổi thành Downstream là controller mở cửa nhận mốc rác
+            }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
                 throw;   // người gọi bỏ đi — không phải lỗi hạ tầng, không được đổi thành "mở cửa"
@@ -126,6 +138,50 @@ namespace Isas.CampaignService.Services
             {
                 _logger.LogWarning(ex, "Gọi AIService /face-detect lỗi hạ tầng.");
                 throw new DownstreamServiceException("Không gọi được AIService face-detect.", ex);
+            }
+        }
+
+        // Mã AIService đặt trong body 422 khi ảnh không giải mã được (app/face_verify.py IMAGE_UNREADABLE_CODE).
+        internal const string ImageUnreadableCode = "IMAGE_UNREADABLE";
+
+        // 422 có HAI nghĩa ở AIService: (1) ảnh không giải mã được — `detail` là OBJECT mang mã
+        // IMAGE_UNREADABLE; (2) pydantic từ chối body — `detail` là MẢNG, tức khoá JSON phía ta lệch hợp đồng.
+        // CHỈ (1) được đổi thành ImageUnreadableException. (2) rơi xuống nhánh lỗi hạ tầng như cũ: coi nó là
+        // "ảnh hỏng" thì một lần đổi tên khoá là face-enroll từ chối MỌI ứng viên (fail-closed toàn hệ).
+        private async Task ThrowIfImageUnreadableAsync(HttpResponseMessage resp, string endpoint, CancellationToken ct)
+        {
+            if (resp.StatusCode != HttpStatusCode.UnprocessableEntity) return;
+            var image = TryReadUnreadableImage(await resp.Content.ReadAsStringAsync(ct));
+            if (image is null) return;
+            _logger.LogWarning("AIService {Endpoint} → 422 IMAGE_UNREADABLE (ảnh '{Image}' không giải mã được).",
+                endpoint, image);
+            throw new ImageUnreadableException(image);
+        }
+
+        /// <summary>Tên ảnh hỏng nếu body là 422 IMAGE_UNREADABLE, ngược lại <c>null</c>.</summary>
+        internal static string? TryReadUnreadableImage(string? raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return null;
+            try
+            {
+                using var doc = JsonDocument.Parse(raw);
+                if (doc.RootElement.ValueKind != JsonValueKind.Object
+                    || !doc.RootElement.TryGetProperty("detail", out var detail)
+                    || detail.ValueKind != JsonValueKind.Object)
+                    return null;
+                if (!detail.TryGetProperty("code", out var code)
+                    || code.ValueKind != JsonValueKind.String
+                    || !string.Equals(code.GetString(), ImageUnreadableCode, StringComparison.Ordinal))
+                    return null;
+                return detail.TryGetProperty("image", out var image)
+                       && image.ValueKind == JsonValueKind.String
+                       && !string.IsNullOrWhiteSpace(image.GetString())
+                    ? image.GetString()!.Trim()
+                    : "image";
+            }
+            catch (JsonException)
+            {
+                return null;
             }
         }
 
