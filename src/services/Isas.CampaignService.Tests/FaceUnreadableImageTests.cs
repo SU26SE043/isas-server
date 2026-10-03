@@ -205,6 +205,8 @@ public class FaceUnreadableImageTests
     [InlineData("{\"detail\":\"x\"}")]
     [InlineData("{\"detail\":{\"code\":\"SOMETHING_ELSE\",\"image\":\"reference\"}}")]
     [InlineData("không phải json")]
+    [InlineData("{}")]                                  // 422 không có khoá detail
+    [InlineData("{\"error\":\"Unprocessable\"}")]      // proxy/gateway trả 422 với body khác hẳn
     public async Task Client_422KhongMa_VanLaDownstream(string body)
     {
         var h = new AiHandler();
