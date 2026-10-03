@@ -297,16 +297,76 @@ public class MonitoringGapSweeperTests
     //  Lấp đòn B2 (cần 2 điểm để so) không bắt được: chặn endpoint giây đầu ⇒ 0 ảnh.
     // ══════════════════════════════════════════════════════════════════════════════════════════════
 
+    // `startedAt` = mốc LƯỢT đang giữ (attempt_started_at — điểm neo của LUẬT 2). `firstStartedAt` = mốc
+    // lần đầu (interview_started_at); bỏ trống ⇒ membership một lượt, hai mốc trùng nhau.
     private static void SeedTerminalMembership(
         CampaignTestDb t, Guid campaignId, Guid sessionId, Guid candidateId,
-        DateTime startedAt, DateTime updatedAt,
-        InterviewProgressStatus status = InterviewProgressStatus.Completed)
+        DateTime? startedAt, DateTime updatedAt,
+        InterviewProgressStatus status = InterviewProgressStatus.Completed,
+        DateTime? firstStartedAt = null)
     {
         var m = CampaignTestDb.NewMembership(campaignId, candidateId, sessionId: sessionId, interviewStatus: status);
-        m.InterviewStartedAt = startedAt;
+        m.InterviewStartedAt = firstStartedAt ?? startedAt;
+        m.AttemptStartedAt = startedAt;
         m.UpdatedAt = updatedAt;
         t.Db.CampaignMemberships.Add(m);
         t.Db.SaveChanges();
+    }
+
+    // ── LÀM LẠI (ATT1): LUẬT 2 neo vào mốc LƯỢT đang giữ, không vào mốc lần đầu ────────────────────
+    // Lượt 1 bắt đầu 2 giờ trước, lượt 2 chỉ kéo dài 30s (chưa tới nhịp kiểm đầu ⇒ 0 ảnh là bình thường).
+    // Neo vào mốc lần đầu thì thời lượng thành ~2 giờ ⇒ cờ "0 ảnh suốt buổi" OAN cho lượt 2.
+    [Fact]
+    public async Task NoShot_Luot2Ngan_MocLanDauCachXa_KhongCo()
+    {
+        using var t = new CampaignTestDb();
+        var camp = SeedCampaign(t, faceVerify: true);
+        var sid = Guid.NewGuid();
+        var attemptStart = DateTime.UtcNow.AddMinutes(-10);
+        SeedTerminalMembership(t, camp.Id, sid, Guid.NewGuid(), attemptStart, attemptStart.AddSeconds(30),
+            status: InterviewProgressStatus.Abandoned, firstStartedAt: DateTime.UtcNow.AddHours(-2));
+
+        var r = await ScanOnce(Build(t));
+
+        Assert.Equal(0, r.NoShotSessions);
+        Assert.Equal(0, await t.NewContext().SessionFlags.CountAsync());
+    }
+
+    // Lượt 2 đủ dài mà 0 ảnh ⇒ đúng 1 cờ, và số phút trong note là của LƯỢT 2 (10 phút), không phải tính
+    // từ lượt 1 (~2 giờ 40 phút). Note là thứ HR đọc — sai số phút là mô tả sai phép đo.
+    [Fact]
+    public async Task NoShot_Luot2DuDai_NoteSoPhutCuaLuot()
+    {
+        using var t = new CampaignTestDb();
+        var camp = SeedCampaign(t, faceVerify: true);
+        var sid = Guid.NewGuid();
+        var attemptStart = DateTime.UtcNow.AddMinutes(-30);
+        SeedTerminalMembership(t, camp.Id, sid, Guid.NewGuid(), attemptStart, attemptStart.AddMinutes(10),
+            firstStartedAt: DateTime.UtcNow.AddHours(-3));
+
+        var r = await ScanOnce(Build(t));
+
+        Assert.Equal(1, r.FlagsWritten);
+        var flag = await t.NewContext().SessionFlags.SingleAsync();
+        Assert.Equal(sid, flag.SessionId);
+        Assert.Contains("(10 phút)", flag.Note!);
+    }
+
+    // Dòng có trước cột mà không chắc chỉ một lượt (attempt_count >= 2 ⇒ attempt_started_at NULL): KHÔNG
+    // xét, KHÔNG lấy mốc lần đầu thế vào — thà không đo còn hơn đo bằng mốc sai (BK23).
+    [Fact]
+    public async Task NoShot_MocLuotKhongBiet_KhongXet_KhongMuonMocLanDau()
+    {
+        using var t = new CampaignTestDb();
+        var camp = SeedCampaign(t, faceVerify: true);
+        var start = DateTime.UtcNow.AddMinutes(-25);
+        SeedTerminalMembership(t, camp.Id, Guid.NewGuid(), Guid.NewGuid(), startedAt: null,
+            updatedAt: start.AddMinutes(10), firstStartedAt: start);
+
+        var r = await ScanOnce(Build(t));
+
+        Assert.Equal(0, r.NoShotSessions);
+        Assert.Equal(0, await t.NewContext().SessionFlags.CountAsync());
     }
 
     // ── buổi CÓ ảnh (≥1 Live) → KHÔNG cờ B3 (hasShot). 1 ảnh ⇒ cũng không có gap B2. ─────────────

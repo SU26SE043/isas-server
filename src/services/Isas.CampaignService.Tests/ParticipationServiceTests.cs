@@ -543,10 +543,10 @@ public class ParticipationServiceTests
         Assert.Equal(InterviewProgressStatus.InProgress, after.InterviewStatus);
     }
 
-    // ── MON1-B1: mốc buổi thi bắt đầu (campaign_membership.interview_started_at) ──────────────────
-    // B3 sweeper dùng mốc này làm điểm neo đối chiếu nhịp face_images.captured_at. Bất biến: đóng dấu
-    // MỘT lần lúc chuyển sang InProgress, resume KHÔNG dời, và membership cũ (mốc null, có trước
-    // migration) resume KHÔNG bị backdate về thời điểm resume.
+    // ── MON1-B1 + mốc lượt: interview_started_at (LẦN ĐẦU) và attempt_started_at (LƯỢT đang giữ) ─────
+    // interview_started_at: đóng dấu MỘT lần lúc chuyển sang InProgress, resume KHÔNG dời, làm lại lượt 2
+    // cũng KHÔNG dời (mốc phễu analytics). attempt_started_at: đặt mỗi khi Start tạo buổi MỚI — điểm neo
+    // của sweeper LUẬT 2. Membership cũ (mốc null, có trước migration) resume KHÔNG bị backdate.
 
     // B1(a): start lần đầu (membership vừa Joined) → interview_started_at được đóng dấu.
     [Fact]
@@ -564,6 +564,8 @@ public class ParticipationServiceTests
         var m = await check.CampaignMemberships.SingleAsync(x => x.CampaignId == camp.Id);
         Assert.NotNull(m.InterviewStartedAt);
         Assert.InRange(m.InterviewStartedAt!.Value, before.AddSeconds(-5), DateTime.UtcNow.AddSeconds(5));
+        // Lần đầu: "lần đầu" và "lượt hiện tại" là CÙNG một thời điểm (một mốc, không hai lời gọi UtcNow).
+        Assert.Equal(m.InterviewStartedAt, m.AttemptStartedAt);
     }
 
     // B1(b): resume (membership đã InProgress + đã có mốc) → start lại KHÔNG dời mốc.
@@ -577,6 +579,7 @@ public class ParticipationServiceTests
         membership.SessionId = FixedSession;
         membership.InterviewStatus = InterviewProgressStatus.InProgress;
         membership.InterviewStartedAt = moc;
+        membership.AttemptStartedAt = moc;
         tdb.Db.CampaignMemberships.Add(membership);
         await tdb.Db.SaveChangesAsync();
 
@@ -585,6 +588,7 @@ public class ParticipationServiceTests
         using var check = tdb.NewContext();
         var after = await check.CampaignMemberships.SingleAsync(x => x.CampaignId == camp.Id);
         Assert.Equal(moc, after.InterviewStartedAt);
+        Assert.Equal(moc, after.AttemptStartedAt);   // vào lại CÙNG buổi ⇒ không phải lượt mới
     }
 
     // B1(c): membership cũ (có trước migration) — InProgress nhưng interview_started_at = null.
@@ -607,31 +611,41 @@ public class ParticipationServiceTests
         using var check = tdb.NewContext();
         var after = await check.CampaignMemberships.SingleAsync(x => x.CampaignId == camp.Id);
         Assert.Null(after.InterviewStartedAt);
+        Assert.Null(after.AttemptStartedAt);         // không backdate cả mốc lượt
     }
 
-    // B1(d): làm dở rồi bỏ (Abandoned) + đã có mốc → khởi động LẠI đi vào khối chuyển-trạng-thái
-    // (Abandoned ∈ tập cho phép ở dòng 322) NHƯNG `??=` phải giữ mốc GỐC, không đóng dấu lại lúc
-    // restart. Đây là ca DUY NHẤT phân biệt `??=` với `=`: resume-từ-InProgress không vào khối, nên
-    // chỉ Abandoned→restart mới chứng minh được toán tử coalesce có tác dụng.
+    // B1(d): lượt 1 bỏ ngang (Abandoned, buổi CŨ) ⇒ Start tạo buổi MỚI (FixedSession) — đúng hình dạng thật
+    // sau ATT1: membership Abandoned ⇔ buổi bên Interview đã kết thúc ⇒ create-or-get luôn ra buổi khác.
+    // Đi vào khối chuyển-trạng-thái nhưng `??=` GIỮ mốc lần đầu; mốc LƯỢT thì dời sang giờ Start lượt 2.
+    // (Bản trước của test này để fake trả LẠI buổi cũ ⇒ isNewSession = false — ca không còn xảy ra, và nó
+    // khoá đúng hành vi làm sweeper LUẬT 2 neo lượt 2 vào giờ lượt 1.)
     [Fact]
-    public async Task Start_RestartTuAbandoned_GiuMocGoc()
+    public async Task Start_LamLaiSauBoNgang_GiuMocLanDau_DatMocLuotMoi()
     {
         using var tdb = new CampaignTestDb();
         var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
+        camp.MaxAttempts = 2;
         var moc = new DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Utc);
         var membership = Membership(camp.Id, FixedCandidate);
-        membership.SessionId = FixedSession;
+        membership.SessionId = Guid.NewGuid();            // buổi lượt 1 (≠ FixedSession fake trả về)
         membership.InterviewStatus = InterviewProgressStatus.Abandoned;
+        membership.AttemptCount = 1;
         membership.InterviewStartedAt = moc;
+        membership.AttemptStartedAt = moc;
         tdb.Db.CampaignMemberships.Add(membership);
         await tdb.Db.SaveChangesAsync();
 
+        var before = DateTime.UtcNow;
         await NewService(tdb.NewContext()).StartInterviewAsync(FixedCandidate, camp.Id, default);
+        var after = DateTime.UtcNow;
 
         using var check = tdb.NewContext();
-        var after = await check.CampaignMemberships.SingleAsync(x => x.CampaignId == camp.Id);
-        Assert.Equal(InterviewProgressStatus.InProgress, after.InterviewStatus);   // restart chạy khối
-        Assert.Equal(moc, after.InterviewStartedAt);                               // nhưng KHÔNG dời mốc
+        var m = await check.CampaignMemberships.SingleAsync(x => x.CampaignId == camp.Id);
+        Assert.Equal(FixedSession, m.SessionId);
+        Assert.Equal(InterviewProgressStatus.InProgress, m.InterviewStatus);   // restart chạy khối
+        Assert.Equal(moc, m.InterviewStartedAt);                               // lần đầu: KHÔNG dời
+        Assert.NotNull(m.AttemptStartedAt);
+        Assert.InRange(m.AttemptStartedAt!.Value, before, after);              // lượt 2: giờ Start lượt 2
     }
 
     // D3(c): sau start, GET /my-campaigns/{id} surface trạng thái resume — Started=true + SessionId khớp

@@ -651,6 +651,83 @@ public class ParticipationAttemptAtt1B2Tests
         Assert.NotEqual(l1, calls.Questions.Single());
     }
 
+    // ── Mốc lượt (attempt_started_at): đặt ĐÚNG khi Start tạo buổi mới, cùng vị ngữ với AttemptCount ──
+
+    private static readonly DateTime MocLuot1 = new(2026, 10, 3, 15, 52, 12, DateTimeKind.Utc);
+
+    private static void SetMoc(CampaignTestDb tdb, CampaignMembership m, DateTime? first, DateTime? attempt)
+    {
+        m.InterviewStartedAt = first;
+        m.AttemptStartedAt = attempt;
+        tdb.Db.SaveChanges();
+    }
+
+    // R1: membership còn InProgress nhưng Interview báo buổi cũ đã bỏ ngang ⇒ lượt MỚI. Ca này KHÔNG đi
+    // vào khối chuyển-trạng-thái (đã InProgress) ⇒ mốc lượt phải đặt ở khối isNewSession, nếu không lượt 2
+    // mang mốc lượt 1. Mốc lần đầu giữ nguyên.
+    [Fact]
+    public async Task Start_R1_BuoiCuDaBoNgang_DatMocLuotMoi_GiuMocLanDau()
+    {
+        using var tdb = new CampaignTestDb();
+        var cand = Guid.NewGuid();
+        var camp = SeedCampaign(tdb, maxAttempts: 2);
+        var s1 = Guid.NewGuid();
+        var s2 = Guid.NewGuid();
+        var m = SeedMembership(tdb, camp.Id, cand, attemptCount: 1, sessionId: s1, status: InterviewProgressStatus.InProgress);
+        SetMoc(tdb, m, MocLuot1, MocLuot1);
+        var mock = WithState(SessionMock(() => s2, new SessionCalls()), new CampaignSessionState(true, "SessionAbandoned"));
+
+        var before = DateTime.UtcNow;
+        await NewService(tdb.NewContext(), mock.Object).StartInterviewAsync(cand, camp.Id, default);
+        var after = DateTime.UtcNow;
+
+        var r = Reload(tdb, camp.Id, cand);
+        Assert.Equal(s2, r.SessionId);
+        Assert.Equal(MocLuot1, r.InterviewStartedAt);
+        Assert.NotNull(r.AttemptStartedAt);
+        Assert.InRange(r.AttemptStartedAt!.Value, before, after);
+    }
+
+    // Abandoned nhưng Interview trả LẠI buổi đang giữ ⇒ không có buổi mới ⇒ không đếm lượt, không dời mốc.
+    [Fact]
+    public async Task Start_InterviewTraCungSession_KhongDoiMocLuot()
+    {
+        using var tdb = new CampaignTestDb();
+        var cand = Guid.NewGuid();
+        var camp = SeedCampaign(tdb, maxAttempts: 2);
+        var sid = Guid.NewGuid();
+        var m = SeedMembership(tdb, camp.Id, cand, attemptCount: 1, sessionId: sid, status: InterviewProgressStatus.Abandoned);
+        SetMoc(tdb, m, MocLuot1, MocLuot1);
+
+        await NewService(tdb.NewContext(), SessionMock(() => sid, new SessionCalls()).Object)
+            .StartInterviewAsync(cand, camp.Id, default);
+
+        var r = Reload(tdb, camp.Id, cand);
+        Assert.Equal(MocLuot1, r.AttemptStartedAt);
+        Assert.Equal(MocLuot1, r.InterviewStartedAt);
+    }
+
+    // Interview ném (402/429/502) ⇒ chưa có buổi nào ⇒ mốc lượt giữ nguyên (cùng SaveChanges với SessionId).
+    [Theory]
+    [MemberData(nameof(InterviewFailures))]
+    public async Task Start_InterviewNem_KhongDoiMocLuot(Exception failure)
+    {
+        using var tdb = new CampaignTestDb();
+        var cand = Guid.NewGuid();
+        var camp = SeedCampaign(tdb, maxAttempts: 2);
+        var s1 = Guid.NewGuid();
+        var m = SeedMembership(tdb, camp.Id, cand, attemptCount: 1, sessionId: s1, status: InterviewProgressStatus.Abandoned);
+        SetMoc(tdb, m, MocLuot1, MocLuot1);
+
+        await Assert.ThrowsAsync(failure.GetType(), () =>
+            NewService(tdb.NewContext(), SessionMock(Guid.NewGuid, new SessionCalls(), failure).Object)
+                .StartInterviewAsync(cand, camp.Id, default));
+
+        var r = Reload(tdb, camp.Id, cand);
+        Assert.Equal(s1, r.SessionId);
+        Assert.Equal(MocLuot1, r.AttemptStartedAt);
+    }
+
     [Theory]
     [InlineData("Scored")]
     [InlineData("Completed")]
