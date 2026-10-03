@@ -38,6 +38,7 @@ from app.schemas import (
     VERIFICATION_RISKS,
 )
 from app.providers.base import QuestionProvider
+from app.wire import wire_get
 from app.usage import report_usage
 
 # BK34 — trần cứng của Gemini batchEmbedContents (đo thật, xem GeminiProvider.embed).
@@ -998,6 +999,9 @@ class GeminiProvider(QuestionProvider):
 
             mx = max_by_id[cid]
             by_score: dict[int, str] = {}
+            # Khoá chữ thường TRẦN là CỐ Ý (không dùng `wire_get`): `item` là JSON GEMINI trả theo
+            # `response_schema` khai ngay trên (`score`/`descriptor` chữ thường), không phải job
+            # .NET qua RabbitMQ (PascalCase). Xem `app/wire.py`.
             for lv in (item.get("levels") or []):
                 if not isinstance(lv, dict):
                     continue
@@ -1903,7 +1907,10 @@ class GeminiProvider(QuestionProvider):
             raw_levels = c.get("levels") or c.get("Levels") or []
             scores: set[int] = set()
             for lv in raw_levels:
-                s = lv.get("score") if isinstance(lv, dict) else lv
+                # 🔴 CẢ HAI casing: job RabbitMQ là PascalCase (`{"Score":…}`). Chỉ đọc `score` thì
+                # tập mốc rỗng ⇒ rơi xuống dải 0..maxScore bên dưới ⇒ AI được phép trả 7 khi HR khai
+                # {0,5,10} và phía C# phải snap lại (E9, sống từ 2026-07-12). Xem `app/wire.py`.
+                s = wire_get(lv, "score", "Score") if isinstance(lv, dict) else lv
                 if s is not None:
                     scores.add(int(s))
             # Không có levels (phòng hờ) → dải mặc định 0..maxScore.

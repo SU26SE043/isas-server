@@ -12,6 +12,7 @@ from app.cv_screening import maybe_start_cv_screening_consumer
 from app.multi_voice import maybe_report_multi_voice
 from app.providers.gemini import GeminiProvider
 from app.transcriber import NO_SPEECH, Transcriber
+from app.wire import wire_get
 
 transcriber = Transcriber()
 provider = GeminiProvider()
@@ -36,6 +37,37 @@ class NoSpeechError(PermanentError):
     .NET phải đánh answer ``Skipped`` chứ không ``Failed``: người luyện đọc lịch sử cần thấy "câu
     này không có câu trả lời", không phải "hệ thống hỏng". Về TIỀN hai nhãn như nhau (PAY-13 chỉ
     hỏi có answer nào ``Scored`` không)."""
+
+
+# F11 — khoá TẦNG ĐẦU của số đo cách nói, đúng bằng `FluencyMetrics.to_dict()` (camelCase) và
+# `DeliveryMetricsDto` phía .NET. Test khoá cả hai chiều: `tests/test_scoring_job_pascal_wire_e9.py`.
+DELIVERY_METRIC_KEYS = (
+    "metricsVersion", "audioSec", "speechSec", "wordCount", "speechRateWpm",
+    "longestPauseSec", "pauseCount", "silenceRatio", "fillerCount", "fillerPer100Words",
+    "fillerBreakdown",
+)
+
+
+def normalize_delivery_metrics(raw):
+    """Đưa số đo cách nói từ job về camelCase — dạng `build_delivery_block` đọc.
+
+    🔴 Job RabbitMQ là PascalCase (`ScoringJobPublisher` serialize không kèm options), nên trên
+    đường thích ứng / republisher số đo tới dưới dạng `{"SpeechRateWpm":…,"PauseCount":…}` trong
+    khi `build_delivery_block` chỉ tra khoá camelCase ⇒ trước bản vá mọi chỉ số in "chưa đo được"
+    (đo trên job thật: 9 lần so với 1) và LLM chấm độ trôi chảy như thể không có dữ liệu âm thanh.
+
+    Chỉ đổi tên đúng các khoá trong `DELIVERY_METRIC_KEYS`, ở TẦNG ĐẦU. KHÔNG đổi khoá đệ quy:
+    khoá bên trong `fillerBreakdown` là DỮ LIỆU (từ đệm ứng viên nói, vd "ừm"), không phải tên field.
+    Khoá lạ bị bỏ — `DeliveryMetricsDto` không có chỗ nhận chúng.
+    """
+    if not isinstance(raw, dict):
+        return None
+    out = {}
+    for camel in DELIVERY_METRIC_KEYS:
+        pascal = camel[0].upper() + camel[1:]
+        if camel in raw or pascal in raw:
+            out[camel] = wire_get(raw, camel, pascal)
+    return out
 
 
 def make_score_payload(answer_id, transcript, rubric_version, scores, attempt_no,
@@ -145,9 +177,8 @@ async def process_message(message: aio_pika.IncomingMessage):
         # F11 — chỉ số cách nói đã đo sẵn ở /decide-next (đường THÍCH ỨNG). Bắt buộc phải đi kèm
         # transcript: worker bỏ Whisper khi có transcript ⇒ nếu không nhận chỉ số ở đây thì buổi
         # adaptive VĨNH VIỄN không có chỉ số trong khi buổi tĩnh lại có — hỏng âm thầm, không lỗi.
-        pre_metrics = body.get("deliveryMetrics") or body.get("DeliveryMetrics")
-        if not isinstance(pre_metrics, dict):
-            pre_metrics = None
+        pre_metrics = normalize_delivery_metrics(
+            body.get("deliveryMetrics") or body.get("DeliveryMetrics"))
 
         # Con dấu engine của bản chép ĐÃ CÓ SẴN (đường thích ứng: /decide-next chép, .NET lưu rồi
         # gửi kèm job). Đi cùng `pre_transcript` chứ không đo lại được ở đây — worker bỏ Whisper
