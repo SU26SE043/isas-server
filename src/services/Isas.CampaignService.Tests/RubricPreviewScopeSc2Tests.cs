@@ -24,6 +24,8 @@ namespace Isas.CampaignService.Tests;
 /// </summary>
 public class RubricPreviewScopeSc2Tests
 {
+    /// <summary>2026-10-03 — chấm thử CHỈ chấm câu trả lời HR tự nhập ⇒ mọi lượt phải có nó.</summary>
+    private const string Ans = "Em dùng POST, kiểm tra dữ liệu đầu vào, lưu DB rồi trả 201 Created.";
     private const string D0 = "CÓ: không nêu được ý nào | CÒN THIẾU: mọi thứ";
     private const string DTop = "CÓ: nêu đủ ý, ví dụ, đánh đổi | CÒN THIẾU: không đáng kể";
 
@@ -43,7 +45,7 @@ public class RubricPreviewScopeSc2Tests
             {
                 received.Add(crit);
                 return Task.FromResult(new RubricPreviewResult(
-                    new[] { "Weak", "Good", "Excellent" }.Select(b => new PreviewSample(
+                    new[] { "Custom" }.Select(b => new PreviewSample(
                         b, $"bài {b}", 160,
                         crit.Select(c => new PreviewSampleScore(c.CriterionId, score, (int)score, "vì")).ToList())).ToList(),
                     PromptVersion: 4, LengthParityWarning: false));
@@ -101,9 +103,9 @@ public class RubricPreviewScopeSc2Tests
         return new Seeded(camp, always, wt1, wt2, qNull, qEmpty, qWt1);
     }
 
-    private static RubricPreviewRequest For(CampaignQuestion q) => new() { QuestionId = q.Id };
+    private static RubricPreviewRequest For(CampaignQuestion q) => new() { QuestionId = q.Id, CustomAnswer = Ans };
     /// <summary>REV-BE R3 — lượt SẼ tính phí phải xác nhận, nếu không 409 trước khi insert/reserve.</summary>
-    private static RubricPreviewRequest ForBilled(CampaignQuestion q) => new() { QuestionId = q.Id, ConfirmBilled = true };
+    private static RubricPreviewRequest ForBilled(CampaignQuestion q) => new() { QuestionId = q.Id, CustomAnswer = Ans, ConfirmBilled = true };
 
     private static Guid[] Ids(IReadOnlyList<PreviewCriterionInput> crit) => crit.Select(c => c.CriterionId).ToArray();
 
@@ -364,18 +366,9 @@ public class RubricPreviewScopeSc2Tests
         var scoped = await NewService(tdb.NewContext(), ai.Object).RunAsync(owner, owner, s.Camp.Id, For(s.QWt1), default);
         var full = await NewService(tdb.NewContext(), ai.Object).RunAsync(owner, owner, s.Camp.Id, For(s.QNull), default);
 
-        var excellent = scoped.Samples.Single(x => x.Band == "Excellent");
-        Assert.Equal(100m, excellent.ActualWeightedPct);                                   // KHÔNG phải 70
-        Assert.Equal(full.Samples.Single(x => x.Band == "Excellent").ActualWeightedPct, excellent.ActualWeightedPct);
-
-        // Kỳ vọng: mọi tiêu chí trong phạm vi cùng mốc {0,5} ⇒ % tổng == % của mức kỳ vọng, bất kể Σw.
-        var (weak, good, exc) = RubricPreviewService.ExpectedLevels(
-            new List<CampaignCriterionLevel> { Level(s.Wt1.Id, 0, D0), Level(s.Wt1.Id, 5, DTop) });
-        Assert.Equal(Math.Round(exc / 5m * 100m, 2), excellent.ExpectedWeightedPct);
-        Assert.Equal(Math.Round(weak / 5m * 100m, 2), scoped.Samples.Single(x => x.Band == "Weak").ExpectedWeightedPct);
-        Assert.Equal(Math.Round(good / 5m * 100m, 2), scoped.Samples.Single(x => x.Band == "Good").ExpectedWeightedPct);
-        // Toàn bộ (Σw = 1) ⇒ số y như trước correction.
-        Assert.Equal(excellent.ExpectedWeightedPct, full.Samples.Single(x => x.Band == "Excellent").ExpectedWeightedPct);
+        var mine = scoped.Samples.Single(x => x.Band == "Custom");
+        Assert.Equal(100m, mine.ActualWeightedPct);                                        // KHÔNG phải 70
+        Assert.Equal(full.Samples.Single(x => x.Band == "Custom").ActualWeightedPct, mine.ActualWeightedPct);
     }
 
     /// <summary>
@@ -445,7 +438,7 @@ public class RubricPreviewScopeSc2Tests
         var s = await SeedAsync(tdb, owner);   // 3 câu CreatedAt tăng dần: QNull(0s) · QEmpty(1s) · QWt1(2s)
         var (ai, received) = AiEcho();
 
-        var res = await NewService(tdb.NewContext(), ai.Object).RunAsync(owner, owner, s.Camp.Id, new RubricPreviewRequest(), default);
+        var res = await NewService(tdb.NewContext(), ai.Object).RunAsync(owner, owner, s.Camp.Id, new RubricPreviewRequest { CustomAnswer = Ans }, default);
 
         Assert.Equal(s.QNull.Id, res.QuestionId);
         Assert.Equal(s.QNull.QuestionText, res.QuestionText);
@@ -476,13 +469,13 @@ public class RubricPreviewScopeSc2Tests
                     ? crit.Where(c => c.CriterionId == s.Always.Id).Select(c => new PreviewSampleScore(c.CriterionId, 5, 5, "vì")).ToList()   // bỏ sót W1
                     : crit.Select(c => new PreviewSampleScore(c.CriterionId, 7, 5, "vì")).ToList();                                            // 7/5
                 return Task.FromResult(new RubricPreviewResult(
-                    new[] { "Weak", "Good", "Excellent" }.Select(b => new PreviewSample(b, $"bài {b}", 160, scores)).ToList(),
+                    new[] { "Custom" }.Select(b => new PreviewSample(b, $"bài {b}", 160, scores)).ToList(),
                     PromptVersion: 4, LengthParityWarning: false));
             });
 
         var res = await NewService(tdb.NewContext(), ai.Object).RunAsync(owner, owner, s.Camp.Id, For(s.QWt1), default);
 
-        var ex = res.Samples.Single(x => x.Band == "Excellent");
+        var ex = res.Samples.Single(x => x.Band == "Custom");
         Assert.Equal((decimal)expectedActual, ex.ActualWeightedPct);
         Assert.Equal(2, ex.Scores.Count);   // bảng vẫn liệt kê đủ 2 tiêu chí trong phạm vi (W1 bỏ sót hiện 0 điểm)
         if (ca == "skip") Assert.Equal(0m, ex.Scores.Single(x => x.CriterionId == s.Wt1.Id).ActualScore);
@@ -523,11 +516,11 @@ public class RubricPreviewScopeSc2Tests
         var s = await SeedAsync(tdb, owner);
         var (ai, _) = AiEcho();
         var credits = new Mock<ICreditReservationClient>(MockBehavior.Strict);
-        var first = await NewService(tdb.NewContext(), ai.Object, credits.Object).RunAsync(owner, owner, s.Camp.Id, new RubricPreviewRequest(), default);
+        var first = await NewService(tdb.NewContext(), ai.Object, credits.Object).RunAsync(owner, owner, s.Camp.Id, new RubricPreviewRequest { CustomAnswer = Ans }, default);
         Assert.Equal(s.QNull.Id, first.QuestionId);   // câu mặc định = QNull (CreatedAt sớm nhất)
 
         var ex = await Assert.ThrowsAsync<PreviewBillingConfirmRequiredException>(() =>
-            NewService(tdb.NewContext(), ai.Object, credits.Object).RunAsync(owner, owner, s.Camp.Id, new RubricPreviewRequest(), default));
+            NewService(tdb.NewContext(), ai.Object, credits.Object).RunAsync(owner, owner, s.Camp.Id, new RubricPreviewRequest { CustomAnswer = Ans }, default));
         Assert.Equal(s.QNull.Id, ex.QuestionId);
         credits.VerifyNoOtherCalls();
     }
@@ -561,7 +554,7 @@ public class RubricPreviewScopeSc2Tests
         var s = await SeedAsync(tdb, owner);
         var (ai, _) = AiEcho();
         var res = await NewService(tdb.NewContext(), ai.Object, new Mock<ICreditReservationClient>(MockBehavior.Strict).Object)
-            .RunAsync(owner, owner, s.Camp.Id, new RubricPreviewRequest { QuestionId = s.QWt1.Id, ConfirmBilled = false }, default);
+            .RunAsync(owner, owner, s.Camp.Id, new RubricPreviewRequest { CustomAnswer = Ans, QuestionId = s.QWt1.Id, ConfirmBilled = false }, default);
         Assert.False(res.Billed);
         Assert.Equal("Succeeded", res.Status);
     }
@@ -582,7 +575,7 @@ public class RubricPreviewScopeSc2Tests
         Assert.Equal(s.QWt1.Id, json.GetProperty("questionId").GetGuid());
         Assert.False(json.GetProperty("billed").GetBoolean());
         Assert.True(json.GetProperty("rubric")[0].TryGetProperty("inScope", out _));
-        Assert.Contains("confirmBilled", JsonSerializer.Serialize(new RubricPreviewRequest(), new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        Assert.Contains("confirmBilled", JsonSerializer.Serialize(new RubricPreviewRequest { CustomAnswer = Ans }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
     }
 
     // ═══════════════ I5 — row cũ trước T6 ═══════════════

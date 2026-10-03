@@ -80,6 +80,14 @@ namespace Isas.CampaignService.Services
             // 400 và vẫn TRƯỚC ReserveAsync, trật tự guard-trước-tiền không đổi.)
             var question = SelectQuestion(campaign, request.QuestionId);
 
+            // ── 4a. phải có câu trả lời của HR (2026-10-03) ───────────────────
+            // Chấm thử nay CHỈ chấm câu trả lời HR tự nhập — bỏ hẳn 3 bài AI Yếu/Khá/Xuất sắc (bài do
+            // chính bộ chấm viết, kết luận "biên độ / thứ tự" dựa trên chúng gây nhiễu nhiều hơn giúp).
+            // Trống ⇒ 400 TRƯỚC khi chạm quota/credit (I7): không còn bài nào để chấm.
+            var customAnswer = request.CustomAnswer?.Trim();
+            if (string.IsNullOrEmpty(customAnswer))
+                throw new ArgumentException("Nhập câu trả lời của bạn rồi mới chấm thử.");
+
             // ── 4b. PHẠM VI CHẤM của câu (SC2 · T6, I6: chấm thử = chấm thật) ─────
             // Ứng viên trả lời câu Q bị chấm trên: tiêu chí Always ∪ tiêu chí Q nhắm tới (INT-18). Chấm
             // thử phải dùng ĐÚNG tập đó, nếu không HR kiểm chứng một thước mà ứng viên bị đo bằng thước
@@ -176,7 +184,7 @@ namespace Isas.CampaignService.Services
                 var result = await _ai.RunAsync(
                     string.IsNullOrWhiteSpace(campaign.Domain) ? "BE" : campaign.Domain!,
                     campaign.Language, campaign.Seniority,
-                    question.QuestionText, question.SampleAnswer, request.CustomAnswer,
+                    question.QuestionText, question.SampleAnswer, customAnswer,
                     // I6 — CÙNG ScoringCriteriaBuilder.Build, chỉ khác TẬP tiêu chí gửi (= phạm vi câu).
                     TargetWordCount, BuildPreviewCriteria(scoped), ct);
 
