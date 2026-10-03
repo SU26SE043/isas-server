@@ -1523,6 +1523,12 @@ namespace Isas.CampaignService.Services
                     $"Phải đặt thời lượng bài thi ({MinTimeLimitMinutes}–{MaxTimeLimitMinutes} phút) trước khi triển khai.");
             ValidateTimeLimitMinutes(campaign.TimeLimitMinutes);
 
+            // Nháp được tạo KHÔNG cần ngày (sàng CV / tải JD trước khi chốt lịch) ⇒ chốt ở đây.
+            if (campaign.StartsAt is null || campaign.ExpiresAt is null)
+                throw new ArgumentException("Phải đặt giờ bắt đầu và hạn nộp trước khi triển khai.");
+            if (campaign.StartsAt >= campaign.ExpiresAt)
+                throw new ArgumentException("Giờ bắt đầu phải trước hạn nộp.");
+
             await EnsureCanCreateCampaignAsync(orgId, await ResolveEntitlementAsync(orgId, ct), ct);
 
             if (campaign.Questions.Count == 0)

@@ -173,10 +173,11 @@ namespace Isas.CampaignService.DTOs
         public List<string>? KeywordsAny { get; set; }
         public int? MinYearsExperience { get; set; }
 
-        [Required]
+        // Ngày TUỲ CHỌN lúc tạo nháp: FE tạo nháp lười để tải JD / sàng CV — những việc không cần
+        // cửa sổ thi. Bắt buộc dời sang PublishCampaignAsync (lên sóng mà thiếu ExpiresAt thì lời
+        // mời không hết hạn, sweeper hạn chót BK18 không quét).
         public DateTime? StartsAt { get; set; }
 
-        [Required]
         public DateTime? ExpiresAt { get; set; }
 
         public List<QuestionItem> Questions { get; set; } = new();
