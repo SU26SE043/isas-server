@@ -28,8 +28,8 @@
 | POST | — (nội bộ, **X-Internal-Token**) | `/api/v1/decide-next` | **Phỏng vấn THÍCH ỨNG (INT-17)** — transcribe đồng bộ + quyết định câu hỏi kế (follow-up/clarify/new/end), Gemini temp 0.3 |
 | POST | — (nội bộ, **X-Internal-Token**) | `/api/v1/tts` | 🔊 **Đọc câu hỏi thành tiếng** — Gemini TTS + **cache mp3 trên S3 theo nội dung**; trả **bytes** `audio/mpeg` |
 | POST | — (nội bộ, **X-Internal-Token**) | `/api/v1/embed` | **Grounding/RAG (D27)** — sinh embedding `gemini-embedding-001`, stateless (xem §Grounding) |
-| POST | — (nội bộ, **X-Internal-Token**) | `/api/v1/face-verify` | **SEC-2/3** — đối chiếu ảnh live ↔ ảnh tham chiếu + đếm mặt (InsightFace) |
-| POST | — (nội bộ, **X-Internal-Token**) | `/api/v1/face-detect` | **B2C coaching (BC-6 ngoại lệ, 2026-09-17)** — ĐẾM MẶT trên 1 ảnh, KHÔNG so khớp danh tính (khác `/face-verify`: không ảnh tham chiếu, không score/match, không `face_mismatch`). **Caller thứ hai từ AC2 (2026-10-03): Campaign `face-enroll`** — kiểm ảnh mốc B2B có đúng 1 khuôn mặt trước khi nhận (0 / >1 → 400; endpoint lỗi → Campaign fail-open). Hợp đồng không đổi một byte |
+| POST | — (nội bộ, **X-Internal-Token**) | `/api/v1/face-verify` | **SEC-2/3** — đối chiếu ảnh live ↔ ảnh tham chiếu + đếm mặt (InsightFace). Ảnh không giải mã được → **422** `{detail:{code:"IMAGE_UNREADABLE", image:"reference"\|"live", message}}` (2026-10-03, trước đó 502) |
+| POST | — (nội bộ, **X-Internal-Token**) | `/api/v1/face-detect` | **B2C coaching (BC-6 ngoại lệ, 2026-09-17)** — ĐẾM MẶT trên 1 ảnh, KHÔNG so khớp danh tính (khác `/face-verify`: không ảnh tham chiếu, không score/match, không `face_mismatch`). **Caller thứ hai từ AC2 (2026-10-03): Campaign `face-enroll`** — kiểm ảnh mốc B2B có đúng 1 khuôn mặt trước khi nhận (0 / >1 → 400; endpoint lỗi → Campaign fail-open). Hợp đồng không đổi một byte. **2026-10-03 — THÊM 422** `{detail:{code:"IMAGE_UNREADABLE", image:"image", message}}` cho ảnh không giải mã được (trước đó 502 ⇒ Campaign fail-open nhận mốc rác); Interview B2C coi 422 như mọi non-2xx khác (không đổi hành vi) |
 | POST | — (nội bộ, **X-Internal-Token**) | `/api/v1/analyze-repo` | **BC18** — phân tích repo GitHub từ `repoDigest` |
 | GET | — (nội bộ, **X-Internal-Token**) | `/api/v1/prompt-defaults` | **F21 (2026-09-16)** — bản MẶC ĐỊNH của từng mảnh prompt admin sửa được (`{defaults: {key: text}, placeholders}`), **stateless**, đọc literal trong `prompt_defaults.py`; Interview kéo về cho màn admin hiện "bản đang chạy" (fail-open). Khe THÊM ⇒ `""`; khe THAY ⇒ chuỗi mẫu có `{role}`/`{job_category}`. Test `test_prompt_defaults.py` khoá ĐỒNG BỘ với builder thật |
 
@@ -198,8 +198,9 @@ POST /api/v1/ai/transcribe   (multipart: file=audio, language="vi")   → 200 { 
 |---|---|
 | 400 | input rỗng/không hợp lệ (vd transcribe thiếu file) |
 | **401** | thiếu/sai `X-Internal-Token` (**mọi endpoint trừ `/health`** — Q2) |
-| 422 | body không qua được pydantic — **validate chạy TRƯỚC gate token**, nên 422 ≠ gate thủng |
-| 502 | Gemini/Whisper lỗi (`Lỗi sinh câu hỏi`/`Lỗi đề xuất tiêu chí`/`Lỗi phân tích CV`) |
+| 422 | body không qua được pydantic — **validate chạy TRƯỚC gate token**, nên 422 ≠ gate thủng. `detail` là **MẢNG** |
+| **422 `IMAGE_UNREADABLE`** | `/face-verify` · `/face-detect`: ảnh tải về được nhưng **không giải mã được** (lỗi DỮ LIỆU, không phải hạ tầng). `detail` là **OBJECT** `{code:"IMAGE_UNREADABLE", image:"reference"\|"live"\|"image", message}` — khác dạng mảng của pydantic để caller tách được "ảnh hỏng" với "khoá JSON lệch hợp đồng". Campaign chỉ đi nhánh "ảnh hỏng" khi thấy đúng mã này (khoá hai phía: `test_face_unreadable_contract.py` ↔ `FaceUnreadableImageTests.cs`) |
+| 502 | Gemini/Whisper lỗi (`Lỗi sinh câu hỏi`/`Lỗi đề xuất tiêu chí`/`Lỗi phân tích CV`); `/face-*`: S3/model lỗi |
 
 ## Chép lời — nhà cung cấp TỪ XA (Whisper cục bộ = DỰ PHÒNG)
 `transcribe_provider`: **`local`** (mặc định) = Whisper cục bộ như trước · **`whisper-1`** = OpenAI · **`gemini`**. Từ xa hỏng (mạng/quota/**bản chép có dấu hiệu hỏng**) → **TỰ ĐỘNG rơi về Whisper cục bộ**; cục bộ hỏng nốt thì giữ hành vi cũ (`PermanentError` → answer `Failed`).
