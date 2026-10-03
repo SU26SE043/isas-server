@@ -101,10 +101,12 @@ public class AdminRubricPreviewService(
         // ── 3. chọn câu hỏi ───────────────────────────────────────────────────
         var question = SelectQuestion(jobCategory, lang, request.Question, request.SampleQuestionId);
 
-        // ── 3b. bỏ 3 bài AI thì phải còn bài của người dùng để chấm ───────────
-        if (!request.IncludeAiSamples && string.IsNullOrWhiteSpace(request.CustomAnswer))
+        // ── 3b. phải có câu trả lời của người dùng (2026-10-03) ────────────────
+        // Chấm thử nay CHỈ chấm bài người dùng tự nói/dán — bỏ hẳn 3 bài AI Yếu/Khá/Xuất sắc.
+        // Trống ⇒ 400 TRƯỚC khi đếm quota / insert row: không tốn lượt nào.
+        if (string.IsNullOrWhiteSpace(request.CustomAnswer))
             throw new InvalidOperationException(
-                "Không bắt AI viết bài mẫu thì phải có bài của bạn (nói hoặc dán) để chấm.");
+                "Nhập hoặc ghi âm câu trả lời của bạn rồi mới chấm thử.");
 
         // ── 4. còn lượt nào đang chạy? (self-heal row mồ côi trước) ────────────
         await ResolveStaleRunningAsync(jobCategory, lang, ct);
@@ -158,7 +160,7 @@ public class AdminRubricPreviewService(
                 jobCategory.ToString(), lang, request.Seniority,
                 question, sampleAnswer: null, request.CustomAnswer,
                 TargetWordCount, BuildPreviewCriteria(aiCriteria), ct,
-                request.IncludeAiSamples, request.DeliveryMetrics);
+                includeAiSamples: false, request.DeliveryMetrics);
 
             var samples = BuildSamples(aiCriteria, criteria, result.Samples, request.DeliveryMetrics, lang);
             run.Samples = JsonSerializer.Serialize(samples, Json);

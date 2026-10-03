@@ -18,6 +18,9 @@ namespace Isas.InterviewService.Tests;
 /// </summary>
 public class AdminRubricPreviewTests
 {
+    /// <summary>2026-10-03 — chấm thử CHỈ chấm bài người dùng tự nhập ⇒ mọi lượt phải có nó.</summary>
+    private const string Ans = "Em sẽ thêm index cho cột hay lọc và đo lại bằng EXPLAIN.";
+
     private static readonly List<AdminRubricLevelInput> Levels =
     [
         new(0, "Không nêu được ý nào liên quan tới câu hỏi, hoặc bỏ trống."),
@@ -139,10 +142,10 @@ public class AdminRubricPreviewTests
         var svc = Service(t);
 
         for (var i = 0; i < AdminRubricPreviewService.FreeRunsPerRubricVersion; i++)
-            await svc.RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest());
+            await svc.RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(CustomAnswer: Ans));
 
         await Assert.ThrowsAsync<PreviewQuotaExceededException>(
-            () => svc.RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest()));
+            () => svc.RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(CustomAnswer: Ans)));
 
         Assert.Equal(AdminRubricPreviewService.FreeRunsPerRubricVersion,
             await t.Db.AdminRubricPreviewRuns.CountAsync(
@@ -169,10 +172,10 @@ public class AdminRubricPreviewTests
         var failing = Service(t, broken.Object);
         for (var i = 0; i < 3; i++)
             await Assert.ThrowsAsync<DownstreamServiceException>(
-                () => failing.RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest()));
+                () => failing.RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(CustomAnswer: Ans)));
 
         // Vẫn còn nguyên quota.
-        var ok = await Service(t).RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest());
+        var ok = await Service(t).RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(CustomAnswer: Ans));
         Assert.Equal(AdminRubricPreviewService.FreeRunsPerRubricVersion - 1, ok.FreeRunsRemaining);
     }
 
@@ -184,7 +187,7 @@ public class AdminRubricPreviewTests
         await SeedRubricWithLevelsAsync(t);
         var svc = Service(t);
         for (var i = 0; i < AdminRubricPreviewService.FreeRunsPerRubricVersion; i++)
-            await svc.RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest());
+            await svc.RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(CustomAnswer: Ans));
 
         // Sửa một mô tả ⇒ bump phiên bản.
         var admin = new AdminB2CRubricService(t.Db);
@@ -195,7 +198,7 @@ public class AdminRubricPreviewTests
                 c.Levels.Select(l => new AdminRubricLevelInput(l.Score, l.Descriptor)).ToList())).ToList()),
             "vi");
 
-        var run = await svc.RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest());
+        var run = await svc.RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(CustomAnswer: Ans));
         Assert.Equal(AdminRubricPreviewService.FreeRunsPerRubricVersion - 1, run.FreeRunsRemaining);
     }
 
@@ -219,7 +222,7 @@ public class AdminRubricPreviewTests
 
         await Assert.ThrowsAsync<DownstreamServiceException>(
             () => Service(t, broken.Object).RunAsync(
-                Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest()));
+                Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(CustomAnswer: Ans)));
 
         var row = await t.Db.AdminRubricPreviewRuns.AsNoTracking().SingleAsync();
         Assert.Equal(AdminRubricPreviewStatus.Failed, row.Status);
@@ -248,7 +251,7 @@ public class AdminRubricPreviewTests
         await t.Db.SaveChangesAsync();
 
         var run = await Service(t).RunAsync(
-            Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest());
+            Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(CustomAnswer: Ans));
 
         Assert.Equal(nameof(AdminRubricPreviewStatus.Succeeded), run.Status);
         Assert.Equal(1, await t.Db.AdminRubricPreviewRuns.CountAsync(
@@ -276,7 +279,7 @@ public class AdminRubricPreviewTests
         await t.Db.SaveChangesAsync();
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => Service(t).RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest()));
+            () => Service(t).RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(CustomAnswer: Ans)));
         Assert.Contains("Đang có một lượt", ex.Message);
     }
 
@@ -294,7 +297,7 @@ public class AdminRubricPreviewTests
         await t.Db.SaveChangesAsync();
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => Service(t).RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest()));
+            () => Service(t).RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(CustomAnswer: Ans)));
         Assert.Contains("Chưa khai mốc", ex.Message);
     }
 
@@ -303,7 +306,7 @@ public class AdminRubricPreviewTests
     {
         using var t = new TestDb();
         await Assert.ThrowsAsync<KeyNotFoundException>(
-            () => Service(t).RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest()));
+            () => Service(t).RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(CustomAnswer: Ans)));
     }
 
     /// <summary>
@@ -323,7 +326,7 @@ public class AdminRubricPreviewTests
         await t.Db.SaveChangesAsync();
 
         var run = await Service(t).RunAsync(
-            Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest());
+            Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(CustomAnswer: Ans));
 
         Assert.DoesNotContain("ACME", run.QuestionText);
         Assert.Contains(AdminPreviewQuestionBank.For(JobCategory.BE, "vi"), q => q.Text == run.QuestionText);
@@ -366,7 +369,7 @@ public class AdminRubricPreviewTests
         var third = AdminPreviewQuestionBank.For(JobCategory.BE, "vi")[2];
 
         var run = await Service(t).RunAsync(Guid.NewGuid(), JobCategory.BE, "vi",
-            new AdminRubricPreviewRequest(SampleQuestionId: third.Id));
+            new AdminRubricPreviewRequest(CustomAnswer: Ans, SampleQuestionId: third.Id));
 
         Assert.Equal(third.Text, run.QuestionText);
     }
@@ -383,7 +386,7 @@ public class AdminRubricPreviewTests
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
             () => Service(t).RunAsync(Guid.NewGuid(), JobCategory.BE, "vi",
-                new AdminRubricPreviewRequest(SampleQuestionId: "BE-vi-99")));
+                new AdminRubricPreviewRequest(CustomAnswer: Ans, SampleQuestionId: "BE-vi-99")));
 
         Assert.Contains("BE-vi-99", ex.Message);
         Assert.Empty(await t.Db.AdminRubricPreviewRuns.ToListAsync());   // không tạo lượt nào
@@ -399,7 +402,7 @@ public class AdminRubricPreviewTests
 
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => Service(t).RunAsync(Guid.NewGuid(), JobCategory.BE, "vi",
-                new AdminRubricPreviewRequest(SampleQuestionId: otherCategory.Id)));
+                new AdminRubricPreviewRequest(CustomAnswer: Ans, SampleQuestionId: otherCategory.Id)));
     }
 
     [Fact]
@@ -408,7 +411,7 @@ public class AdminRubricPreviewTests
         using var t = new TestDb();
         await SeedRubricWithLevelsAsync(t);
         var run = await Service(t).RunAsync(Guid.NewGuid(), JobCategory.BE, "vi",
-            new AdminRubricPreviewRequest(Question: "  Câu tự gõ  "));
+            new AdminRubricPreviewRequest(CustomAnswer: Ans, Question: "  Câu tự gõ  "));
         Assert.Equal("Câu tự gõ", run.QuestionText);
     }
 
@@ -426,32 +429,22 @@ public class AdminRubricPreviewTests
         using var t = new TestDb();
         await SeedRubricWithLevelsAsync(t);
 
-        // Bài "Excellent" đạt 5/5 ở MỌI tiêu chí; "Good" đạt 3/5; "Weak" 0/5.
-        var run = await Service(t, AiMock(weak: 0m, good: 3m, top: 5m).Object)
-            .RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest());
+        // Bài người dùng đạt 5/5 ở MỌI tiêu chí ⇒ 100%; 3/5 ⇒ 60%. (AiMock chấm bài Custom bằng `good`.)
+        var top = await Service(t, AiMock(good: 5m).Object)
+            .RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(CustomAnswer: Ans));
+        var mid = await Service(t, AiMock(good: 3m).Object)
+            .RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(CustomAnswer: Ans, Question: "câu khác"));
 
-        var excellent = run.Samples.Single(s => s.Band == "Excellent");
-        var good = run.Samples.Single(s => s.Band == "Good");
-        var weak = run.Samples.Single(s => s.Band == "Weak");
-
+        var excellent = Assert.Single(top.Samples);
+        Assert.Equal("Custom", excellent.Band);
         Assert.Equal(100m, excellent.ActualPct);
-        Assert.Equal(60m, good.ActualPct);
-        Assert.Equal(0m, weak.ActualPct);
-        Assert.All(run.Samples, x => Assert.Equal("Weighted", x.ScoreFormula));
+        Assert.Equal(60m, Assert.Single(mid.Samples).ActualPct);
+        Assert.Equal("Weighted", excellent.ScoreFormula);
         // Tiền đề ĐẢO có chủ đích: seed có 7 tiêu chí, nhưng chấm thử chỉ chấm 6.
         // Tiêu chí `Độ trôi chảy & tự tin` chấm bằng SỐ ĐO (DeliveryMetrics) nên hai đường publish
-        // thật không gửi nó cho LLM — chấm thử nay cũng vậy, đúng lời hứa "thứ admin kiểm chứng
-        // chính là thứ người luyện bị chấm".
-        //
-        // ⚠ Trước bản vá, test này xanh với 7 vì `ReplaceAsync` LÀM RƠI `ScoringMethod` (seed đi qua
-        // chính hàm đó), biến tiêu chí đo thành `Ai`. Tức con số 7 cũ là bằng chứng của BUG, không
-        // phải của hành vi đúng. Assert theo TÊN chứ không chỉ theo số, để lần sau nếu tiêu chí đo
-        // lọt vào lại thì biết ngay là cái nào.
+        // thật không gửi nó cho LLM — chấm thử nay cũng vậy (bài dán tay không có số đo ⇒ không có hàng đo).
         Assert.Equal(6, excellent.Scores.Count);
         Assert.DoesNotContain(excellent.Scores, s => s.CriterionName.Contains("trôi chảy"));
-        // Mức kỳ vọng đi kèm để so "kỳ vọng vs thật" — số đo duy nhất phơi bày self-scoring bias.
-        Assert.All(excellent.Scores, s => Assert.Equal(5, s.ExpectedLevel));
-        Assert.All(weak.Scores, s => Assert.Equal(0, s.ExpectedLevel));
     }
 
     /// <summary>
@@ -475,8 +468,7 @@ public class AdminRubricPreviewTests
                     .Select(c => new PreviewSampleScore(c.CriterionId, scoreFor(c), (int)scoreFor(c), "vì thế"))
                     .ToList();
                 return new RubricPreviewResult(
-                    [new("Weak", "bài Weak", 160, Scores()), new("Good", "bài Good", 160, Scores()),
-                     new("Excellent", "bài Excellent", 160, Scores())],
+                    [new("Custom", Ans, 12, Scores())],
                     PromptVersion: 7, LengthParityWarning: false);
             });
         return mock;
@@ -496,13 +488,9 @@ public class AdminRubricPreviewTests
         await SeedRubricWithLevelsAsync(t);
 
         var run = await Service(t, AiMockBy(c => c.Name == "Chiều sâu kỹ thuật" ? 5m : 0m).Object)
-            .RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest());
+            .RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(CustomAnswer: Ans));
 
-        var good = run.Samples.Single(s => s.Band == "Good");
-        Assert.Equal(24.44m, good.ActualPct);
-        // Kỳ vọng Good = mốc 3/5 ở mọi tiêu chí ⇒ 60% dưới mọi công thức (đồng đều).
-        Assert.Equal(60m, good.ExpectedPct);
-        Assert.All(run.Samples, s => Assert.Equal(24.44m, s.ActualPct));
+        Assert.Equal(24.44m, Assert.Single(run.Samples).ActualPct);
     }
 
     /// <summary>
@@ -517,11 +505,10 @@ public class AdminRubricPreviewTests
         await SeedRubricWithLevelsAsync(t);
 
         var run = await Service(t, AiMockBy(_ => 3m, omit: B2CRubricSeed.TerminologyName).Object)
-            .RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest());
+            .RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(CustomAnswer: Ans));
 
-        var good = run.Samples.Single(s => s.Band == "Good");
+        var good = Assert.Single(run.Samples);
         Assert.Equal(60m, good.ActualPct);
-        Assert.Equal(60m, good.ExpectedPct);               // kỳ vọng gộp trên CÙNG tập tiêu chí
         Assert.Equal(5, good.Scores.Count);
         Assert.DoesNotContain(good.Scores, x => x.CriterionName == B2CRubricSeed.TerminologyName);
     }
@@ -564,7 +551,7 @@ public class AdminRubricPreviewTests
     {
         using var t = new TestDb();
         await SeedRubricWithLevelsAsync(t);
-        var run = await Service(t).RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest());
+        var run = await Service(t).RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(CustomAnswer: Ans));
         Assert.False(run.DeliveryMetricsAvailable);
         Assert.Equal(7, run.PromptVersion);
     }
@@ -577,8 +564,8 @@ public class AdminRubricPreviewTests
         using var t = new TestDb();
         await SeedRubricWithLevelsAsync(t);
         var svc = Service(t);
-        await svc.RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest());
-        await svc.RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(Question: "câu khác"));
+        await svc.RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(CustomAnswer: Ans));
+        await svc.RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(CustomAnswer: Ans, Question: "câu khác"));
 
         var history = await svc.HistoryAsync(JobCategory.BE, "vi");
 
@@ -597,7 +584,7 @@ public class AdminRubricPreviewTests
         await SeedRubricWithLevelsAsync(t, JobCategory.BE, "vi");
         await new AdminB2CRubricService(t.Db).GetAsync(JobCategory.FE, "vi");
         var svc = Service(t);
-        await svc.RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest());
+        await svc.RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(CustomAnswer: Ans));
 
         Assert.Single(await svc.HistoryAsync(JobCategory.BE, "vi"));
         Assert.Empty(await svc.HistoryAsync(JobCategory.FE, "vi"));
@@ -657,14 +644,15 @@ public class AdminRubricPreviewTests
     };
 
     [Fact]
-    public async Task IncludeAiSamplesFalse_ChiChamBaiNguoiDung_VaChuyenCoXuongClient()
+    public async Task ClientCuGuiIncludeAiSamplesTrue_VanChiChamBaiNguoiDung_KhongSinhBaiAI()
     {
         using var t = new TestDb();
         await SeedRubricWithLevelsAsync(t);
         var mock = AiMock();
 
         var run = await Service(t, mock.Object).RunAsync(Guid.NewGuid(), JobCategory.BE, "vi",
-            new AdminRubricPreviewRequest(CustomAnswer: "Em sẽ thêm index cho cột hay lọc.", IncludeAiSamples: false));
+            // FE bản cũ còn gửi khoá này: phải bị BỎ QUA (không 400 vì Disallow, không sinh 3 bài AI).
+            new AdminRubricPreviewRequest(CustomAnswer: "Em sẽ thêm index cho cột hay lọc.", IncludeAiSamples: true));
 
         Assert.Equal(["Custom"], run.Samples.Select(x => x.Band).ToArray());
         Assert.Equal("Succeeded", run.Status);
@@ -674,15 +662,17 @@ public class AdminRubricPreviewTests
             false, null), Times.Once);
     }
 
-    [Fact]
-    public async Task IncludeAiSamplesFalse_MaKhongCoBaiNguoiDung_400_KhongGoiAI_KhongTonLuot()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("   ")]
+    public async Task KhongCoBaiNguoiDung_400_KhongGoiAI_KhongTonLuot(string? answer)
     {
         using var t = new TestDb();
         await SeedRubricWithLevelsAsync(t);
         var mock = AiMock();
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => Service(t, mock.Object).RunAsync(
-            Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(IncludeAiSamples: false)));
+            Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(CustomAnswer: answer)));
 
         mock.VerifyNoOtherCalls();
         Assert.Empty(await t.Db.AdminRubricPreviewRuns.ToListAsync());   // không có row Running/Failed mồ côi
