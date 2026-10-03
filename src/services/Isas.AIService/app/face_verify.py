@@ -15,6 +15,30 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
+# Mã máy đọc được trong body 422 của /face-verify và /face-detect. Campaign CHỈ đi nhánh "ảnh hỏng"
+# khi thấy đúng mã này — 422 do pydantic (khoá JSON lệch hợp đồng, `detail` là MẢNG) vẫn phải là lỗi
+# hạ tầng để Campaign fail-open, nếu không một lần đổi tên khoá là chặn MỌI ứng viên ở cửa enroll.
+# Đổi chuỗi này = đổi hợp đồng: khoá ở test_face_unreadable.py (đọc thẳng file .cs phía Campaign).
+IMAGE_UNREADABLE_CODE = "IMAGE_UNREADABLE"
+
+
+class UnreadableImageError(ValueError):
+    """Ảnh KHÔNG giải mã được — lỗi của DỮ LIỆU gửi vào, không phải của hạ tầng.
+
+    Tách khỏi lỗi hạ tầng (S3 / model) vì hai ca dẫn tới hai cách xử khác hẳn nhau ở caller:
+    hạ tầng hỏng ⇒ không phạt ai (Campaign fail-open ở face-enroll, SEC-5); ảnh rác ⇒ phải NÓI RA
+    (enroll từ chối mốc, face-check ghi cờ). Trước đây cả hai cùng ra ValueError → 502, và Campaign
+    nhận luôn ảnh mốc rác như thể chỉ là AIService chập chờn.
+
+    `image` = ảnh nào hỏng, đặt theo tên khoá request: "reference" (referenceImageKey) ·
+    "live" (liveImageKey) · "image" (imageKey của /face-detect — chỉ có một ảnh).
+    Kế thừa ValueError để mọi chỗ đang bắt ValueError vẫn bắt được."""
+
+    def __init__(self, image: str = "image") -> None:
+        self.image = image
+        super().__init__(f"Không giải mã được ảnh '{image}' (định dạng không hợp lệ hoặc dữ liệu hỏng).")
+
+
 class FaceCompareResult(NamedTuple):
     """Kết quả đối chiếu — tách rõ "ảnh MỐC hỏng" khỏi "người KHÁC".
 
@@ -101,10 +125,17 @@ class FaceVerifier:
         import cv2
         import numpy as np
 
-        arr = np.frombuffer(img_bytes, dtype=np.uint8)
-        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        try:
+            arr = np.frombuffer(img_bytes, dtype=np.uint8)
+            img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        except Exception as ex:
+            # cv2 5.0 NÉM `cv2.error` với buffer rỗng (đo 2026-10-03) thay vì trả None — vẫn là
+            # dữ liệu hỏng, không phải hạ tầng. imdecode chạy thuần trong bộ nhớ, không I/O.
+            raise UnreadableImageError() from ex
         if img is None:
-            raise ValueError("Không decode được ảnh (định dạng không hợp lệ?).")
+            # Ảnh rác thường gặp: vài byte đầu đúng chữ ký JPEG (FF D8 FF E0) rồi rác — qua được
+            # mọi phép kiểm magic-byte phía trên nhưng imdecode trả None.
+            raise UnreadableImageError()
         return img
 
     def _detect(self, img_bytes: bytes) -> list:
@@ -133,7 +164,12 @@ class FaceVerifier:
 
         Xem FaceCompareResult về ý nghĩa từng trường.
         """
-        live_faces = self._detect(live_bytes)
+        # Gắn đúng TÊN ảnh hỏng ở đây (không ở `_detect`): endpoint cần nói ảnh nào hỏng, vì
+        # "mốc hỏng" là lỗi lúc enroll còn "live hỏng" là việc của buổi thi đang diễn ra.
+        try:
+            live_faces = self._detect(live_bytes)
+        except UnreadableImageError as ex:
+            raise UnreadableImageError("live") from ex
         face_count = len(live_faces)
         if face_count != 1:
             # Live đã không so được → khỏi detect ảnh mốc (tiết kiệm một lượt model).
@@ -143,7 +179,12 @@ class FaceVerifier:
         # Ảnh reference cũng cần đúng 1 mặt. Nếu enroll kém (0 hoặc nhiều mặt) → KHÔNG raise
         # (tránh 502 chặn cả face-check), trả score 0.0 KÈM số mặt đọc được trên ảnh mốc để
         # caller phân biệt "mốc hỏng" (→ identity_unverified) với "người khác" (→ face_mismatch).
-        ref_face_count, ref_emb = self._reference_faces(ref_bytes)
+        try:
+            ref_face_count, ref_emb = self._reference_faces(ref_bytes)
+        except UnreadableImageError as ex:
+            # Ảnh mốc KHÔNG giải mã được — khác "mốc đọc được nhưng 0 mặt" (nhánh ngay dưới): ném
+            # để endpoint trả 422 image=reference. Chỉ tới được đây khi live có đúng 1 mặt.
+            raise UnreadableImageError("reference") from ex
         if ref_face_count != 1 or ref_emb is None:
             return FaceCompareResult(0.0, face_count, ref_face_count)
 

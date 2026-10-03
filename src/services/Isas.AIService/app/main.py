@@ -28,7 +28,7 @@ from app.schemas import (
 from app.providers import gemini as gemini_module
 from app.providers.gemini import GeminiProvider
 from app.transcriber import Transcriber
-from app.face_verify import FaceVerifier
+from app.face_verify import IMAGE_UNREADABLE_CODE, FaceVerifier, UnreadableImageError
 from app.config import settings
 from app import logging_setup, storage, audio, threadpool, timing, tts
 from app.tts_redis import TtsRedisCoordinator
@@ -698,6 +698,25 @@ async def summarize_session(req: SummarizeSessionRequest,
         raise HTTPException(status_code=502, detail=f"Lỗi tổng kết buổi luyện: {ex}")
 
 
+def _unreadable_image(ex: UnreadableImageError) -> HTTPException:
+    """422 cho ảnh KHÔNG giải mã được (/face-verify, /face-detect).
+
+    Trước đây ảnh rác ra 502 như lỗi hạ tầng ⇒ Campaign face-enroll FAIL-OPEN nhận luôn mốc rác (204),
+    và mọi lượt face-check sau đó cũng 502 ⇒ 0 cờ cho HR. 422 + mã máy đọc được tách hẳn hai ca.
+
+    `detail` là OBJECT (`{code, image, message}`) — cố ý khác dạng MẢNG của 422 pydantic, để caller
+    phân biệt "ảnh hỏng" với "khoá JSON lệch hợp đồng". Hợp đồng THÊM, không bỏ: 200/400/401/404/502
+    giữ nguyên nghĩa cũ."""
+    return HTTPException(
+        status_code=422,
+        detail={
+            "code": IMAGE_UNREADABLE_CODE,
+            "image": ex.image,
+            "message": str(ex),
+        },
+    )
+
+
 @router.post("/face-verify", response_model=FaceVerifyResponse)
 async def face_verify(
     req: FaceVerifyRequest,
@@ -708,6 +727,8 @@ async def face_verify(
     Kéo 2 ảnh từ S3 theo key → detect+embed (thread, nặng CPU) → dựng cờ (theo ảnh LIVE):
       0 mặt → no_face · >1 mặt → multiple_faces · 1 mặt & score < threshold → face_mismatch.
     Riêng ca ảnh MỐC không đọc được mặt → identity_unverified (lỗi ở ảnh mốc, không phải ứng viên).
+    Ảnh KHÔNG giải mã được (live hoặc mốc) → 422 `{detail:{code:"IMAGE_UNREADABLE", image:"live"|
+    "reference", message}}` — Campaign tự quyết cờ (mốc hỏng → identity_unverified, live hỏng → no_face).
     Mọi tín hiệu = CỜ cho HR (SEC-4), KHÔNG tự chặn/hủy bài.
 
     Gate X-Internal-Token, fail-closed (GEN-7): endpoint máy-máy — CampaignService gọi, kéo
@@ -727,6 +748,9 @@ async def face_verify(
         live_bytes = await asyncio.to_thread(storage.get_object_bytes, req.liveImageKey)
         result = await asyncio.to_thread(
             face_verifier.compare, ref_bytes, live_bytes)
+    except UnreadableImageError as ex:
+        # Lỗi của DỮ LIỆU, không phải hạ tầng — xem _unreadable_image(). Bắt TRƯỚC nhánh 502.
+        raise _unreadable_image(ex)
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi đối chiếu khuôn mặt: {ex}")
 
@@ -770,6 +794,8 @@ async def face_detect(
     Khác /face-verify: chỉ 1 ảnh, không ảnh tham chiếu, không cosine similarity, không
     `face_mismatch`. Chỉ `no_face`/`multiple_faces` — người luyện tự bật, chỉ chính họ đọc kết
     quả, không HR/admin. Gate X-Internal-Token fail-closed (GEN-7), như /face-verify/-decide-next.
+    Ảnh không giải mã được → 422 `{detail:{code:"IMAGE_UNREADABLE", image:"image", message}}`
+    (Campaign face-enroll → 400 REFERENCE_UNREADABLE; Interview B2C coi như non-2xx khác).
     """
     if not _valid_internal_token(x_internal_token):
         raise HTTPException(status_code=401, detail="Invalid internal token")
@@ -788,6 +814,8 @@ async def face_detect(
 
     try:
         face_count = await asyncio.to_thread(face_verifier.count_faces, img_bytes)
+    except UnreadableImageError as ex:
+        raise _unreadable_image(ex)
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi đếm khuôn mặt: {ex}")
 
