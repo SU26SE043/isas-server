@@ -2293,6 +2293,10 @@ namespace Isas.CampaignService.Services
                 {
                     var candidateId = g.Select(x => x.CandidateId).First();
                     identityByCandidate.TryGetValue(candidateId, out var identity);
+                    // AC2 — membership chỉ nhớ MỘT buổi (lượt mới nhất). Dòng này là buổi đó thì trạng thái
+                    // của membership là trạng thái của nó; là buổi CŨ (ATT1 làm lại) thì membership không
+                    // biết gì về nó ⇒ để null, KHÔNG mượn trạng thái lượt đang chạy.
+                    var isLatestAttempt = identity.SessionId == g.Key;
                     return new UnscoredFlaggedRow
                     {
                         SessionId = g.Key,
@@ -2302,7 +2306,11 @@ namespace Isas.CampaignService.Services
                         Flags = flagsBySession.TryGetValue(g.Key, out var f) ? f : new List<FlagDto>(),
                         // RNK1 · HĐ-3 — điểm sàng CV vẫn xem được dù buổi bỏ ngang (cùng identity, không query phụ).
                         CvMatchScore = identity.CvMatchScore,
-                        CvVerificationRisk = identity.CvVerificationRisk
+                        CvVerificationRisk = identity.CvVerificationRisk,
+                        IsLatestAttempt = isLatestAttempt,
+                        InterviewStatus = isLatestAttempt ? identity.InterviewStatus?.ToString() : null,
+                        AbandonReason = isLatestAttempt ? identity.AbandonReason : null,
+                        InterviewStartedAt = isLatestAttempt ? identity.InterviewStartedAt : null
                     };
                 })
                 // Flags rỗng không xảy ra ở đây (row dựng từ chính allFlags), nhưng DefaultIfEmpty giữ
@@ -2592,9 +2600,13 @@ namespace Isas.CampaignService.Services
         // Fallback `?? m.CvSubmission.X`: che luôn membership đường-2 cũ mà backfill của migration sót
         // (và mọi row tạo trước F5 chưa join lại) → HR vẫn thấy tên/email thay vì ô trống.
         // RNK1: 3 field CV (score/risk/version) lấy THẲNG từ cùng LEFT JOIN — không query phụ theo ứng viên.
+        // AC2: thêm 4 cột membership (buổi đang giữ + trạng thái + lý do bỏ ngang + mốc bắt đầu) cho khu
+        // `unscoredFlagged` — vẫn CÙNG query, chỉ mở rộng projection.
         private readonly record struct CandidateIdentity(
             string? FullName, string? Email,
-            int? CvMatchScore, string? CvVerificationRisk, int? CvScreeningVersion);
+            int? CvMatchScore, string? CvVerificationRisk, int? CvScreeningVersion,
+            Guid? SessionId = null, InterviewProgressStatus? InterviewStatus = null,
+            string? AbandonReason = null, DateTime? InterviewStartedAt = null);
 
         private async Task<Dictionary<Guid, CandidateIdentity>> GetIdentityByCandidateAsync(
             Guid campaignId, CancellationToken ct)
@@ -2608,7 +2620,11 @@ namespace Isas.CampaignService.Services
                     Email = m.Email ?? (m.CvSubmission != null ? m.CvSubmission.Email : null),
                     CvMatchScore = m.CvSubmission != null ? m.CvSubmission.OverallMatchScore : null,
                     CvVerificationRisk = m.CvSubmission != null ? m.CvSubmission.VerificationRisk : null,
-                    CvScreeningVersion = m.CvSubmission != null ? m.CvSubmission.ScreeningVersion : null
+                    CvScreeningVersion = m.CvSubmission != null ? m.CvSubmission.ScreeningVersion : null,
+                    m.SessionId,
+                    m.InterviewStatus,
+                    m.AbandonReason,
+                    m.InterviewStartedAt
                 })
                 .ToListAsync(ct);
 
@@ -2620,7 +2636,8 @@ namespace Isas.CampaignService.Services
                 {
                     var x = g.First();
                     return new CandidateIdentity(
-                        x.FullName, x.Email, x.CvMatchScore, x.CvVerificationRisk, x.CvScreeningVersion);
+                        x.FullName, x.Email, x.CvMatchScore, x.CvVerificationRisk, x.CvScreeningVersion,
+                        x.SessionId, x.InterviewStatus, x.AbandonReason, x.InterviewStartedAt);
                 });
         }
 
@@ -3047,14 +3064,15 @@ namespace Isas.CampaignService.Services
             }).ToList();
 
             // R7: nối ứng viên có cờ mà CHƯA Scored — HR đọc bản export cũng thấy nhóm đáng ngờ nhất.
-            // rank/total_score/scored_at để TRỐNG (nullable → CsvHelper ghi ô rỗng); result = "Chưa chấm".
+            // rank/total_score/scored_at để TRỐNG (nullable → CsvHelper ghi ô rỗng); result = nhãn trạng thái
+            // buổi (AC2: Bỏ ngang / Đang làm bài / Lượt trước / …) — CÙNG helper với PDF.
             rows.AddRange(results.UnscoredFlagged.Select(u => new ResultCsvRow
             {
                 Rank = null,
                 CandidateId = u.CandidateId,
                 SessionId = u.SessionId,
                 TotalScore = null,
-                Result = "Chưa chấm",
+                Result = UnscoredFlaggedRow.ExportResultLabel(u),
                 ScoredAt = null,
                 Flags = FlagDto.SummarizeForExport(u.Flags),   // MON1-B4: cùng helper với results + PDF
                 FullName = u.FullName ?? string.Empty,

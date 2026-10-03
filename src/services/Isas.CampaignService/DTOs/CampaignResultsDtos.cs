@@ -143,6 +143,35 @@ namespace Isas.CampaignService.DTOs
         // null = mời bằng email không có CV). Risk = cờ đứng cạnh, KHÔNG vào điểm.
         public int? CvMatchScore { get; set; }
         public string? CvVerificationRisk { get; set; }
+
+        // AC2 — trạng thái buổi, để HR không đọc "chưa được chấm" thành "lát nữa sẽ có điểm". Đọc từ CÙNG
+        // query membership của danh tính (F5), không query phụ, không gọi xuyên service. ĐẶT Ở CUỐI theo
+        // quy ước additive. Ba field trạng thái CHỈ có giá trị khi dòng này là buổi membership ĐANG giữ
+        // (IsLatestAttempt) — membership chỉ nhớ một buổi, nên gắn trạng thái của nó vào buổi CŨ là bịa.
+        public string? InterviewStatus { get; set; }      // NotStarted | InProgress | Abandoned | Completed | null
+        public bool IsLatestAttempt { get; set; }          // = campaign_membership.session_id == SessionId
+        public string? AbandonReason { get; set; }         // no_scored_answer · expired_no_answer · generation_failed …; null = không biết
+        public DateTime? InterviewStartedAt { get; set; }
+
+        // AC2 — nhãn ô "Kết quả" của dòng chưa chấm trong CSV/PDF. MỘT hàm cho cả hai bản xuất (F16:
+        // fork logic là đường để hai bản trôi xa nhau mà không test nào đỏ).
+        internal const string AbandonReasonGenerationFailed = "generation_failed";
+        public const string LabelGenerationFailed = "Lỗi hệ thống — không tạo được câu hỏi";
+        public const string LabelAbandoned = "Bỏ ngang";
+        public const string LabelInProgress = "Đang làm bài";
+        public const string LabelPreviousAttempt = "Lượt trước";
+        public const string LabelNotScored = "Chưa chấm";
+
+        public static string ExportResultLabel(UnscoredFlaggedRow row)
+        {
+            if (!row.IsLatestAttempt) return LabelPreviousAttempt;
+            if (row.InterviewStatus == "Abandoned")
+                return string.Equals(row.AbandonReason, AbandonReasonGenerationFailed, StringComparison.Ordinal)
+                    ? LabelGenerationFailed
+                    : LabelAbandoned;
+            if (row.InterviewStatus == "InProgress") return LabelInProgress;
+            return LabelNotScored;
+        }
     }
 
     // E11b — HR chốt/sửa điểm cuối. Note bắt buộc (ghi audit). Score/Result đều null = CLEAR override (về AI).

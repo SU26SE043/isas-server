@@ -29,7 +29,7 @@
 | POST | — (nội bộ, **X-Internal-Token**) | `/api/v1/tts` | 🔊 **Đọc câu hỏi thành tiếng** — Gemini TTS + **cache mp3 trên S3 theo nội dung**; trả **bytes** `audio/mpeg` |
 | POST | — (nội bộ, **X-Internal-Token**) | `/api/v1/embed` | **Grounding/RAG (D27)** — sinh embedding `gemini-embedding-001`, stateless (xem §Grounding) |
 | POST | — (nội bộ, **X-Internal-Token**) | `/api/v1/face-verify` | **SEC-2/3** — đối chiếu ảnh live ↔ ảnh tham chiếu + đếm mặt (InsightFace) |
-| POST | — (nội bộ, **X-Internal-Token**) | `/api/v1/face-detect` | **B2C coaching (BC-6 ngoại lệ, 2026-09-17)** — ĐẾM MẶT trên 1 ảnh, KHÔNG so khớp danh tính (khác `/face-verify`: không ảnh tham chiếu, không score/match, không `face_mismatch`) |
+| POST | — (nội bộ, **X-Internal-Token**) | `/api/v1/face-detect` | **B2C coaching (BC-6 ngoại lệ, 2026-09-17)** — ĐẾM MẶT trên 1 ảnh, KHÔNG so khớp danh tính (khác `/face-verify`: không ảnh tham chiếu, không score/match, không `face_mismatch`). **Caller thứ hai từ AC2 (2026-10-03): Campaign `face-enroll`** — kiểm ảnh mốc B2B có đúng 1 khuôn mặt trước khi nhận (0 / >1 → 400; endpoint lỗi → Campaign fail-open). Hợp đồng không đổi một byte |
 | POST | — (nội bộ, **X-Internal-Token**) | `/api/v1/analyze-repo` | **BC18** — phân tích repo GitHub từ `repoDigest` |
 | GET | — (nội bộ, **X-Internal-Token**) | `/api/v1/prompt-defaults` | **F21 (2026-09-16)** — bản MẶC ĐỊNH của từng mảnh prompt admin sửa được (`{defaults: {key: text}, placeholders}`), **stateless**, đọc literal trong `prompt_defaults.py`; Interview kéo về cho màn admin hiện "bản đang chạy" (fail-open). Khe THÊM ⇒ `""`; khe THAY ⇒ chuỗi mẫu có `{role}`/`{job_category}`. Test `test_prompt_defaults.py` khoá ĐỒNG BỘ với builder thật |
 

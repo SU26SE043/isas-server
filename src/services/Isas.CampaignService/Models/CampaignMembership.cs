@@ -40,6 +40,12 @@ namespace Isas.CampaignService.Models
         // session KHÁC session membership đang giữ). Vào lại buổi đang dở / gọi trùng KHÔNG tính; Start
         // ném trước khi có buổi (402/429/502/lỗi sinh câu hỏi) KHÔNG tính. So với campaigns.max_attempts.
         public int AttemptCount { get; set; }
+        // AC2 — lý do Interview báo buổi BỎ NGANG (`SessionAbandoned.Reason`: no_scored_answer ·
+        // expired_no_answer · generation_failed …), ghi bởi RankingEventHandler cho buổi ĐANG giữ ở
+        // SessionId; Start tạo lượt mới (ATT1) thì xoá cùng lúc gán SessionId mới. Text tự do, KHÔNG CHECK,
+        // KHÔNG HasMaxLength (tiền lệ reject_reason/transcript_engine: Interview thêm lý do mới thì
+        // Campaign không được nổ). null = "không biết" (BK23) — KHÔNG backfill dòng có trước cột này.
+        public string? AbandonReason { get; set; }
         // SEC-2/DATA-2: ảnh tham chiếu face-verify — 1 bản/ứng viên/campaign. Lưu S3 KEY (không ảnh trong DB), null tới khi có.
         public string? ReferenceImageKey { get; set; }
 

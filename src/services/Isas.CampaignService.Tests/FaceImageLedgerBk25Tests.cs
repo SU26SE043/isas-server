@@ -85,6 +85,9 @@ public class FaceImageLedgerBk25Tests
         m.Setup(x => x.VerifyAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<double?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new FaceVerifyResult(1, true, 0.9f, new List<string>()));
+        // AC2 — enroll hỏi AIService đếm mặt; ảnh hợp lệ = đúng 1 mặt.
+        m.Setup(x => x.DetectAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new FaceDetectResult(1, new List<string>()));
         return m.Object;
     }
 
@@ -204,10 +207,11 @@ public class FaceImageLedgerBk25Tests
     }
 
     // ── (6) DATA-2: enroll lại CÙNG đuôi file → vẫn đúng 1 object, 1 dòng ─────────
-    // Key deterministic nên object bị ghi đè; sổ chỉ dời CapturedAt (không đẻ dòng thứ hai, không vỡ
-    // UNIQUE(storage_key)). Hạn giữ tính lại từ lần enroll mới — đúng: object trong S3 là ảnh MỚI.
+    // AC2 — đổi tiền đề có chủ đích: trước AC2 key deterministic nên object bị GHI ĐÈ (sổ chỉ dời
+    // CapturedAt). Ghi đè rồi mới kiểm là phá mốc tốt đang có ⇒ nay mỗi lần enroll một key riêng, bản
+    // cũ bị dọn SAU khi bản mới được nhận. Bất biến DATA-2 vẫn y nguyên: 1 object + 1 dòng sổ.
     [Fact]
-    public async Task Enroll_Lai_CungDuoiFile_VanDungMotDong_VaDoiCapturedAt()
+    public async Task Enroll_Lai_CungDuoiFile_KeyMoi_DonBanCu_VanDungMotDong()
     {
         using var t = new CampaignTestDb();
         var (camp, candidateId) = SeedMember(t);
@@ -224,7 +228,10 @@ public class FaceImageLedgerBk25Tests
         using var db = t.NewContext();
         var row = Assert.Single(await db.FaceImages.AsNoTracking().ToListAsync());
         Assert.True(row.CapturedAt > lanDau);
-        Assert.Empty(files.Deleted);          // cùng key → không có bản cũ nào bị bỏ lại để dọn
+        Assert.Equal(2, files.Uploaded.Count);
+        Assert.NotEqual(files.Uploaded[0], files.Uploaded[1]);   // không ghi đè object đang dùng
+        Assert.Equal(new[] { files.Uploaded[0] }, files.Deleted); // bản cũ rời S3 sau khi bản mới được nhận
+        Assert.Equal(files.Uploaded[1], row.StorageKey);
     }
 
     // ── (7) DATA-2: enroll lại ĐỔI đuôi file → key khác → bản cũ phải bị dọn ──────
