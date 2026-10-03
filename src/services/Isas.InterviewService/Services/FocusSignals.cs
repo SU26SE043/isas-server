@@ -14,6 +14,12 @@ namespace Isas.InterviewService.Services;
 /// chỉ được PracticeFaceCheckService ghi sau khi hỏi AIService `/face-detect`. Tách hai tập
 /// (<see cref="Allowed"/> vs <see cref="ServerOnly"/>) là lớp chặn đầu tiên chống giả mạo cờ.
 ///
+/// 2026-10-03 — thêm <see cref="CameraBlocked"/> vào <see cref="Allowed"/> (client tự khai): khung
+/// webcam tối/bị che chỉ TRÌNH DUYỆT thấy được (FE cố ý KHÔNG gửi ảnh đen cho AI — nhận về `no_face`
+/// là gộp "che cam" với "rời chỗ", hai lời khuyên khác nhau). Trước đó FE chỉ hiện toast tại chỗ rồi
+/// không ghi gì ⇒ màn kết quả không bao giờ biết người luyện đã che cam. Client tự khai được vì đây là
+/// coaching: tự khai "tôi che cam" chỉ làm xấu kết quả của chính người khai, không ai khác đọc.
+///
 /// Giá trị phải khớp ĐÚNG CHECK `ck_practice_focus_events_signal_type` — có test khoá hai đầu.
 /// </summary>
 public static class FocusSignals
@@ -23,10 +29,14 @@ public static class FocusSignals
     public const string FocusLost = "focus_lost";
     public const string NoFace = "no_face";
     public const string MultipleFaces = "multiple_faces";
+    public const string CameraBlocked = "camera_blocked";
 
-    /// <summary>Tín hiệu HÀNH VI — client tự khai qua <c>POST focus-events</c>.</summary>
+    /// <summary>
+    /// Tín hiệu client tự khai qua <c>POST focus-events</c>: 3 tín hiệu HÀNH VI + <see cref="CameraBlocked"/>
+    /// (khung webcam tối/bị che — trình duyệt đo độ sáng tại chỗ, không có ảnh nào rời máy).
+    /// </summary>
     public static readonly IReadOnlySet<string> Allowed =
-        new HashSet<string>(StringComparer.Ordinal) { TabSwitch, Paste, FocusLost };
+        new HashSet<string>(StringComparer.Ordinal) { TabSwitch, Paste, FocusLost, CameraBlocked };
 
     /// <summary>
     /// Tín hiệu MẶT — chỉ server ghi (sau khi gọi AIService `/face-detect`), KHÔNG BAO GIỜ nhận từ
