@@ -6,6 +6,7 @@ from app.language import EN, VI, field_lang, normalize, output_directive, per100
 from app.roadmap_mode import DEFAULT_MODE, lesson_mode_block, roadmap_headline
 from app.roadmap_quality import DEFAULT_SCOPE, scope_instruction
 from app.schemas import NO_EVIDENCE
+from app.wire import wire_get
 from app.seniority import calibration_block as seniority_calibration_block
 from app.seniority import knowledge_block as seniority_knowledge_block
 from app.seniority import normalize as normalize_seniority
@@ -960,6 +961,9 @@ def build_preview_answers_prompt(question: str, criteria: list[dict],
     # trong khi vẫn mô tả ĐÚNG cơ chế, tức đã thoả mốc 3; còn bài "xuất sắc" chỉ 67–87% (kỳ vọng
     # 100) vì thiếu đúng những yếu tố mốc 5 liệt kê (cái giá phải trả, triệu chứng khi chịu tải,
     # đánh đổi). Bộ chấm phân bậc đúng; người viết bài mẫu mới là bên lệch.
+    # Đọc khoá chữ thường TRẦN là CỐ Ý (không dùng `wire_get`): `criteria` ở đây đến từ
+    # `PreviewCriterion.model_dump()` của đường chấm thử HTTP — pydantic luôn trả đúng tên field
+    # (chữ thường), và hàm này KHÔNG nằm trên đường job RabbitMQ (PascalCase). Xem `app/wire.py`.
     def _descriptor(c: dict, score: int | None) -> str:
         for lv in (c.get("levels") or []):
             if isinstance(lv, dict) and lv.get("score") == score:
@@ -1582,15 +1586,19 @@ def build_scoring_prompt(question: str, transcript: str,
         lines.append(f'- criterionId="{cid}" | Tiêu chí: {name} | Thang: 0-{mx} | {desc}')
 
         # E9 — các MỨC khả dụng: AI phải chọn 1 mức, KHÔNG cho điểm ngoài mức.
+        # 🔴 Khoá BÊN TRONG mốc/câu neo cũng phải đọc CẢ HAI casing (`wire_get`): job thật đi qua
+        # RabbitMQ là PascalCase (`{"Score","Descriptor"}`), chấm thử đi HTTP là camelCase. Trước
+        # bản vá chỉ đọc camelCase ⇒ prompt chấm thật in "• Mức None: " suốt từ E9 trong khi chấm
+        # thử vẫn thấy mốc. Test khoá: `tests/test_scoring_job_pascal_wire_e9.py`.
         for lv in (c.get("levels") or c.get("Levels") or []):
-            ls = lv.get("score") if isinstance(lv, dict) else None
-            ld = (lv.get("descriptor") if isinstance(lv, dict) else "") or ""
+            ls = wire_get(lv, "score", "Score")
+            ld = wire_get(lv, "descriptor", "Descriptor") or ""
             lines.append(f'    • Mức {ls}: {ld}')
 
         # E9 — câu trả lời mẫu neo cho mức (nếu có) — giúp AI hiệu chỉnh.
         for an in (c.get("anchors") or c.get("Anchors") or []):
-            asc = an.get("score") if isinstance(an, dict) else None
-            ex = (an.get("exampleAnswer") if isinstance(an, dict) else "") or ""
+            asc = wire_get(an, "score", "Score")
+            ex = wire_get(an, "exampleAnswer", "ExampleAnswer") or ""
             lines.append(f'    ↳ Ví dụ mức {asc}: {ex}')
     rubric_block = "\n".join(lines)
 
