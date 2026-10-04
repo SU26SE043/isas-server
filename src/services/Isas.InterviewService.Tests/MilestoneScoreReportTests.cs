@@ -261,7 +261,8 @@ public class MilestoneScoreReportTests
         var c = Crit(report, "Clarity");
         Assert.Equal(40m, c.ReferenceAveragePercentage);
         Assert.Equal(20m, c.DeltaPct);
-        // baseline là snapshot SỐ đo lúc lập lộ trình — không có buổi nào đứng sau nó.
+        // Lộ trình này không lưu source_session_ids ⇒ không có buổi nào để liệt kê dưới mốc. (Có
+        // source_session_ids thì liệt kê — xem các test BaselineCoBuoiNguon_* bên dưới.)
         Assert.Empty(c.ReferenceSessions);
     }
 
@@ -288,6 +289,104 @@ public class MilestoneScoreReportTests
         Assert.Null(report.ComparedWithTitle);
         Assert.Equal(50m, Crit(report, "Clarity").DeltaPct);   // 90 − 40
         Assert.Empty(Crit(report, "Clarity").ReferenceSessions);
+    }
+
+    // ══ BUỔI ĐỨNG SAU MỐC BAN ĐẦU (2026-10-04) ══════════════════════════════════════════════
+    // Trước bản này nhánh baseline luôn trả ReferenceSessions RỖNG ⇒ FE in "Chưa có buổi nào được
+    // chấm" ngay cạnh con số mốc 60%. Lộ trình CÓ lưu buổi nguồn, nên phải liệt kê — và danh sách
+    // phải CỘNG RA đúng con số mốc (bất biến gốc của phần tính).
+
+    // Lộ trình mới: mốc = trung bình buổi nguồn ⇒ liệt kê MỌI buổi nguồn có chấm tiêu chí đó.
+    [Fact]
+    public async Task BaselineCoBuoiNguon_TrungBinh_LietKeMoiBuoi_CongRaDungMoc()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var src1 = AddScoredSessionAt(t, user, new DateTime(2026, 9, 15, 0, 0, 0, DateTimeKind.Utc),
+            ("Clarity", 20m), ("Depth", 80m));
+        var src2 = AddScoredSessionAt(t, user, new DateTime(2026, 9, 17, 0, 0, 0, DateTimeKind.Utc),
+            ("Clarity", 0m));
+        var s1 = AddScoredSessionAt(t, user, new DateTime(2026, 10, 4, 0, 0, 0, DateTimeKind.Utc),
+            ("Clarity", 44m), ("Depth", 60m));
+
+        var r = NewRoadmap(user, new Dictionary<string, decimal> { ["Clarity"] = 10m, ["Depth"] = 80m });
+        r.SourceSessionIds = [src1, src2];
+        var m1 = AddMilestone(r, 1, MilestoneStatus.InProgress);
+        AddLesson(m1, 1, LessonStatus.Done, s1);
+        t.Db.Roadmaps.Add(r);
+        await t.Db.SaveChangesAsync();
+
+        var report = await Svc(t).GetMilestoneScoreReportAsync(user, r.Id, m1.Id);
+
+        var clarity = Crit(report!, "Clarity");
+        Assert.Equal([src1, src2], clarity.ReferenceSessions.Select(x => x.SessionId));
+        Assert.Equal([20m, 0m], clarity.ReferenceSessions.Select(x => x.Percentage));
+        Assert.Equal(
+            Math.Round(clarity.ReferenceSessions.Average(x => x.Percentage), 2),
+            clarity.ReferenceAveragePercentage);
+        Assert.Equal(34m, clarity.DeltaPct);
+
+        // Tiêu chí chỉ buổi nguồn src1 có chấm ⇒ chỉ liệt kê src1.
+        var depth = Crit(report!, "Depth");
+        Assert.Equal([src1], depth.ReferenceSessions.Select(x => x.SessionId));
+    }
+
+    // Lộ trình CŨ (tạo trước 2026-10-04): mốc = buổi MỚI NHẤT ⇒ chỉ buổi đó cộng ra đúng mốc ⇒ chỉ
+    // liệt kê buổi đó. Liệt kê cả hai sẽ là một danh sách có trung bình 10 dưới con số mốc 0.
+    [Fact]
+    public async Task BaselineCoBuoiNguon_LoTrinhCu_MocBuoiMoiNhat_ChiLietKeBuoiDo()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var older = AddScoredSessionAt(t, user, new DateTime(2026, 9, 15, 0, 0, 0, DateTimeKind.Utc), ("Clarity", 20m));
+        var newer = AddScoredSessionAt(t, user, new DateTime(2026, 9, 17, 0, 0, 0, DateTimeKind.Utc), ("Clarity", 0m));
+        var s1 = AddScoredSessionAt(t, user, new DateTime(2026, 10, 4, 0, 0, 0, DateTimeKind.Utc), ("Clarity", 44m));
+
+        var r = NewRoadmap(user, new Dictionary<string, decimal> { ["Clarity"] = 0m });
+        r.SourceSessionIds = [newer, older];
+        var m1 = AddMilestone(r, 1, MilestoneStatus.InProgress);
+        AddLesson(m1, 1, LessonStatus.Done, s1);
+        t.Db.Roadmaps.Add(r);
+        await t.Db.SaveChangesAsync();
+
+        var c = Crit((await Svc(t).GetMilestoneScoreReportAsync(user, r.Id, m1.Id))!, "Clarity");
+
+        var only = Assert.Single(c.ReferenceSessions);
+        Assert.Equal(newer, only.SessionId);
+        Assert.Equal(0m, only.Percentage);
+        Assert.Equal(0m, c.ReferenceAveragePercentage);
+    }
+
+    // Không khớp cách nào (dữ liệu nguồn đã đổi so với lúc chốt mốc) ⇒ KHÔNG liệt kê — thà nói
+    // "không xác định" còn hơn đưa một danh sách không cộng ra con số đang hiện. Kèm: buổi nguồn
+    // của NGƯỜI KHÁC lọt vào source_session_ids cũng không bao giờ được liệt kê.
+    [Fact]
+    public async Task BaselineCoBuoiNguon_KhongKhopMoc_KhongLietKe_VaBoBuoiNguoiKhac()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var other = Guid.NewGuid();
+        var mine = AddScoredSessionAt(t, user, new DateTime(2026, 9, 15, 0, 0, 0, DateTimeKind.Utc),
+            ("Clarity", 20m), ("Depth", 40m));
+        var foreign = AddScoredSessionAt(t, other, new DateTime(2026, 9, 16, 0, 0, 0, DateTimeKind.Utc),
+            ("Depth", 0m));
+        var s1 = AddScoredSessionAt(t, user, new DateTime(2026, 10, 4, 0, 0, 0, DateTimeKind.Utc),
+            ("Clarity", 60m), ("Depth", 60m));
+
+        // Clarity mốc 55 — không khớp 20 bằng cách nào. Depth mốc 40 — khớp đúng buổi của chính chủ;
+        // nếu buổi người khác (0) lọt vào thì trung bình thành 20 và danh sách sẽ lộ id của họ.
+        var r = NewRoadmap(user, new Dictionary<string, decimal> { ["Clarity"] = 55m, ["Depth"] = 40m });
+        r.SourceSessionIds = [mine, foreign];
+        var m1 = AddMilestone(r, 1, MilestoneStatus.InProgress);
+        AddLesson(m1, 1, LessonStatus.Done, s1);
+        t.Db.Roadmaps.Add(r);
+        await t.Db.SaveChangesAsync();
+
+        var report = (await Svc(t).GetMilestoneScoreReportAsync(user, r.Id, m1.Id))!;
+
+        Assert.Empty(Crit(report, "Clarity").ReferenceSessions);
+        Assert.Equal(55m, Crit(report, "Clarity").ReferenceAveragePercentage);   // mốc vẫn là số đã lưu
+        Assert.Equal([mine], Crit(report, "Depth").ReferenceSessions.Select(x => x.SessionId));
     }
 
     // Tiêu chí KHÔNG có mốc → deltaPct null, KHÔNG phải 0. 0 nghĩa là "không tiến bộ";

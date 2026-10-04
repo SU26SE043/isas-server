@@ -3,13 +3,15 @@ namespace Isas.InterviewService.DTOs;
 // BC15 (D20) — report roadmap ôn tập cá nhân hoá B2C. Interim (Active) tính on-read từ
 // session_criterion_scores (BC9); Final (Completed) đọc snapshot roadmaps.final_report — KHÔNG tính lại.
 
-// GET /roadmaps/{id}/report. radar + levelEvaluation luôn có (kể cả interim); kết luận (AI) rỗng/null khi interim.
+// GET /roadmaps/{id}/report. radar + levelEvaluation luôn có (kể cả interim). strengths/weaknesses/
+// improvements: interim = THEO LUẬT từ radar/ngưỡng/mốc (RoadmapReportService.BuildRuleConclusions);
+// bản chốt = kết luận AI /summarize-roadmap (AI lỗi → giữ bản theo luật). overallComment chỉ có khi chốt.
 public record RoadmapReportResponse(
     IReadOnlyList<RoadmapRadarCriterionResponse> Radar,   // xu hướng GẦN ĐÂY per tiêu chí (xem record bên dưới)
     IReadOnlyList<RoadmapLevelEvaluationResponse> LevelEvaluation,
-    IReadOnlyList<string> Strengths,                       // kết luận chi tiết — AI /summarize-roadmap (best-effort)
-    IReadOnlyList<string> Weaknesses,
-    IReadOnlyList<string> Improvements,                    // cần cải thiện + gợi ý luyện tiếp
+    IReadOnlyList<string> Strengths,                       // tiêu chí đạt ngưỡng cấp độ
+    IReadOnlyList<string> Weaknesses,                      // tiêu chí chưa đạt ngưỡng
+    IReadOnlyList<string> Improvements,                    // tiêu chí có điểm gần đây cao hơn mốc xuất phát
     string? OverallComment,
     // Trạng thái roadmap tại thời điểm đọc. Client dùng để biết đây là báo cáo TẠM THỜI (Active,
     // tính on-read) hay báo cáo CUỐI (Completed, đọc snapshot đã chốt) — hai thứ khác nhau về ý

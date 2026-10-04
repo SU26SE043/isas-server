@@ -67,8 +67,10 @@ public record MilestoneScoreSnapshot(
 /// Điểm mốc để so. <c>null</c> = tiêu chí này không có mốc ⇒ <paramref name="DeltaPct"/> cũng null.
 /// </param>
 /// <param name="ReferenceSessions">
-/// Các buổi của mốc — CHỈ có khi mốc là chặng liền trước. Mốc <c>baseline</c> là một snapshot số
-/// (đo lúc lập lộ trình), không có buổi nào đứng sau nó ⇒ rỗng.
+/// Các buổi của mốc: chặng liền trước → buổi của chặng đó; mốc <c>baseline</c> → các buổi nguồn chọn
+/// lúc tạo lộ trình, CHỈ khi chúng cộng ra đúng con số mốc đã lưu (xem
+/// <c>RoadmapReportService.LoadBaselineSourcesAsync</c>). Rỗng = không có hoặc không đối chiếu được —
+/// chặng chốt sổ trước 2026-10-04 cũng rỗng ở nhánh baseline (snapshot không tính lại).
 /// </param>
 /// <param name="DeltaPct">
 /// <c>current − reference</c>. <c>null</c> = KHÔNG CÓ MỐC — <b>không được</b> thay bằng 0: 0 nghĩa
