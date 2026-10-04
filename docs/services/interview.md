@@ -296,7 +296,7 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 
 **`POST /roadmaps`** — Tạo roadmap.
 - Req: `{ "jobCategory": "BA"|"BE"|"FE", "level": "Fresher"|"Junior"|"Middle"|"Senior", "cvId": uuid?, "mode": "LevelUp"|"Reinforce"? }`.
-- Server gom **điểm yếu** từ các session `Scored` gần nhất (`session_criterion_scores.needs_improvement`) + `parsed_text` CV (nếu có) → gọi AIService `/generate-roadmap` (**sync**) → lưu `roadmaps` + `roadmap_milestones` + `roadmap_lessons`; snapshot `baseline` (% hiện tại per tiêu chí) + `source_session_ids`.
+- Server gom **điểm yếu** từ các session `Scored` gần nhất (`session_criterion_scores.needs_improvement`) + `parsed_text` CV (nếu có) → gọi AIService `/generate-roadmap` (**sync**) → lưu `roadmaps` + `roadmap_milestones` + `roadmap_lessons`; snapshot `baseline` (% per tiêu chí = **trung bình các buổi đã chọn**, đều theo buổi — `RoadmapBaselineRule`; trước 2026-10-04 là buổi mới nhất, lộ trình cũ giữ nguyên số đã lưu) + `source_session_ids`.
 - **`sessionIds` BẮT BUỘC ≥1 buổi đã chấm** (MIS1-B6 — GUARD 1, chạy TRƯỚC mọi I/O): rỗng/thiếu →
   **400** `ROADMAP_SESSIONS_REQUIRED` ("luyện thêm rồi quay lại"); quá `MaxSourceSessions=20` buổi
   → **400** `ROADMAP_TOO_MANY_SESSIONS` ("bớt buổi rồi chọn lại"). *(Đảo NGƯỢC hành vi BC12 cũ:
@@ -342,8 +342,12 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 - 🔴 **Buổi bài học KHÔNG gắn CV của lộ trình** (`CvId = null`) — cố ý. CV chọn MỘT LẦN lúc lập lộ trình từng được nhét vào prompt của MỌI bài; đo trên dev có 2 lộ trình `BE` dùng CV "Business Analyst" và câu hỏi sinh ra hỏi đúng nghề BA. Không chặn được bằng cách kiểm nghề: `file_records` **không có cột nghề nào**. Theo đúng tiền lệ đã đo của `RoadmapService.CreateAsync` (đã gỡ CV khỏi prompt sinh lộ trình). `roadmaps.cv_id` **vẫn giữ** (provenance + kiểm quyền lúc tạo). **Đánh đổi:** buổi bài học mất báo cáo đối chiếu CV↔câu trả lời (BC8, cần `session.cv_id`) — trên dev chỉ 1/17 buổi hội đủ điều kiện. Buổi luyện **tự do** không đổi (ở đó người dùng chọn CV cho đúng buổi đó).
 - Res **`201`** `PracticeSessionResponse`. Lỗi: **401/403/404** · **402** (hết credit) · **409** (lesson đang `Practicing` — resume session cũ thay vì tạo mới) · **502**.
 
+- **`RoadmapResponse.resolvedFrom`** (BE-4) = `{ sessionIds: uuid[], baselineAvailable, scope?, sessions? }`. **`sessions`** (additive 2026-10-04) = cùng các buổi trong `sessionIds` kèm `{ id, createdAt, completedAt?, overallScore?, lessonTitle? }` (`lessonTitle` = tên bài nếu buổi là bài của một lộ trình, kể cả lộ trình khác; `null` = buổi luyện tự do), owner-scoped, cũ → mới. Trước đó chỉ có id trần ⇒ FE in "Ngày phiên luyện chưa có" cho mọi ô. `sessionIds` giữ nguyên cho client cũ.
+
+**`GET /roadmaps/{id}/milestones/{mid}/score-report`** — phần tính sau con số delta của chặng. Mốc `baseline` nay **liệt kê buổi nguồn** trong `referenceSessions` (2026-10-04; trước luôn rỗng ⇒ FE in "chưa có buổi nào được chấm" cạnh con số mốc) — CHỈ khi danh sách cộng ra đúng mốc đã lưu: trung bình mọi buổi nguồn khớp → liệt kê tất cả; lộ trình cũ (mốc = buổi mới nhất) khớp buổi mới nhất → chỉ buổi đó; không khớp → rỗng (không biết). Chặng đã chốt sổ trước bản này giữ snapshot cũ (không tính lại).
+
 **`GET /roadmaps/{id}/report`** — Report roadmap → **`200`** `RoadmapReportResponse`.
-- **Interim** (`Active`): radar + levelEvaluation tính từ các session đã `Scored`; kết luận (strengths/…/overallComment) có thể rỗng/null.
+- **Interim** (`Active`): radar + levelEvaluation tính từ các session đã `Scored`; `strengths`/`weaknesses`/`improvements` **THEO LUẬT** (2026-10-04, `BuildRuleConclusions`): mạnh = đạt ngưỡng cấp độ (cao trước) · yếu = chưa đạt (thấp trước) · tiến bộ = điểm gần đây > mốc xuất phát (mốc ban đầu, thiếu thì buổi đầu tiên trong lộ trình; không mốc → không xét). Chuỗi dạng `"Tên (44%)"` / `"Tên: 10% → 44% (+34)"`, số InvariantCulture. `overallComment` null. KHÔNG gọi AI.
 - **Final** (`Completed`): đọc **snapshot** `roadmaps.final_report` + `overall_comment` — không tính lại.
 
 ### Callback nội bộ (worker → InterviewService) — **không qua gateway**, header `X-Internal-Token`
@@ -1000,7 +1004,7 @@ lesson   : Theory ─(/start: tạo session + reserve credit)─► Practicing �
 - **Improvement mile N** = avg `percentage_c` (từ `session_criterion_scores` các session thuộc mile N) − avg mile N−1; **mile 1 so với `roadmaps.baseline`** (baseline `null` → mile 1 không có delta, chỉ hiện điểm đạt).
 - **Radar** = avg `percentage_c` per tiêu chí qua **mọi** session thuộc roadmap — đọc `session_criterion_scores` (BC9), **không** tính lại từ `answer_scores`.
 - **Đánh giá theo level**: `passed_c = percentage_c ≥ ngưỡng level`. Ngưỡng mặc định **Fresher 50 · Junior 60 · Middle 70 · Senior 80** (config `Roadmap:LevelThresholdPct` — *chốt khi build*); snapshot vào report lúc build (đổi config không hồi tố).
-- **Kết luận chi tiết** (strengths / weaknesses / improvements + `overallComment`): AIService `/summarize-roadmap` **best-effort** — AI lỗi → list rỗng + comment null, roadmap vẫn `Completed` (pattern BC10). Final report **snapshot** vào `roadmaps.final_report`; interim **không** lưu (tính on-read).
+- **Kết luận chi tiết** (strengths / weaknesses / improvements + `overallComment`): bản **theo luật** luôn được tính trước (cùng đầu vào với prompt); khi chốt, AIService `/summarize-roadmap` **best-effort** ghi đè + viết comment — AI lỗi → **giữ bản theo luật** + comment null, roadmap vẫn `Completed` (trước 2026-10-04: list rỗng vĩnh viễn). Đo prod 2026-10-04: 0/39 lộ trình từng hoàn tất ⇒ trước bản này chưa người dùng nào thấy ba ô có nội dung. Final report **snapshot** vào `roadmaps.final_report`; interim **không** lưu (tính on-read).
 
 **Edge cases.** Chưa có buổi nào đã chấm → roadmap chuẩn theo `level + jobCategory` (baseline null). Rubric đổi version giữa roadmap → `focus_criteria`/`baseline` là **snapshot theo TÊN tiêu chí** (so theo tên, không FK id — tránh vỡ khi rubric re-seed). Xoá CV đang gắn roadmap → chặn (FK Restrict). Lesson chưa mở lý thuyết mà gọi `/start` → cho phép (lý thuyết không bắt buộc đọc trước, sinh lazy khi mở).
 
