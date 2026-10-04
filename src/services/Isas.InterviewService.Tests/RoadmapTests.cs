@@ -645,6 +645,61 @@ public class RoadmapTests
         Assert.True(getBody.ResolvedFrom.BaselineAvailable);
     }
 
+    // ── 2026-10-04 — resolvedFrom.sessions: buổi nguồn KÈM ngày/điểm/tên bài ──
+    // Trước đó chỉ có `sessionIds` (id trần) ⇒ FE in "Ngày phiên luyện chưa có" cho mọi ô dù buổi có
+    // ngày thật. Buổi nguồn là bài của lộ trình KHÁC thì phải mang tên bài đó; buổi luyện tự do → null.
+    [Fact]
+    public async Task Get_ResolvedFrom_Sessions_KemNgayDiemVaTenBai()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var lessonSid = SeedScoredSession(t, user, ("Clarity", 40m, true));
+        var freeSid = SeedScoredSession(t, user, ("Clarity", 20m, true));
+
+        var lessonSession = t.Db.PracticeSessions.Single(s => s.Id == lessonSid);
+        lessonSession.CreatedAt = new DateTime(2026, 9, 15, 12, 0, 0, DateTimeKind.Utc);
+        lessonSession.CompletedAt = new DateTime(2026, 9, 15, 12, 10, 0, DateTimeKind.Utc);
+        lessonSession.OverallScore = 26.67m;
+        t.Db.PracticeSessions.Single(s => s.Id == freeSid).CreatedAt =
+            new DateTime(2026, 9, 17, 7, 0, 0, DateTimeKind.Utc);
+
+        // Buổi `lessonSid` là một bài của lộ trình TRƯỚC.
+        var prior = new Roadmap
+        {
+            Id = Guid.NewGuid(), CandidateId = user, JobCategory = JobCategory.BE,
+            Level = RoadmapLevel.Junior, Status = RoadmapStatus.Active, CreatedAt = DateTime.UtcNow
+        };
+        var pm = new RoadmapMilestone { Id = Guid.NewGuid(), OrderNo = 1, Title = "P1", FocusCriteria = [] };
+        pm.Lessons.Add(new RoadmapLesson
+        {
+            Id = Guid.NewGuid(), OrderNo = 1, Title = "Bài DML", Status = LessonStatus.Done, SessionId = lessonSid
+        });
+        prior.Milestones.Add(pm);
+        t.Db.Roadmaps.Add(prior);
+        t.Db.SaveChanges();
+
+        var ctrl = Controller(t, new Mock<IStorageService>().Object, GenMock(SampleRoadmap()).Object, user);
+        var created = Assert.IsType<RoadmapResponse>(Assert.IsType<CreatedResult>(await ctrl.Create(
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, SessionIds: [freeSid, lessonSid]),
+            default)).Value);
+        // Đường TẠO cũng phải trả, không chỉ đường đọc.
+        Assert.Equal(2, created.ResolvedFrom.Sessions!.Count);
+
+        var body = Assert.IsType<RoadmapResponse>(
+            Assert.IsType<OkObjectResult>(await ctrl.Get(created.Id, default)).Value);
+
+        var sessions = body.ResolvedFrom.Sessions!;
+        Assert.Equal([lessonSid, freeSid], sessions.Select(x => x.Id));   // cũ → mới
+        var lesson = sessions[0];
+        Assert.Equal(new DateTime(2026, 9, 15, 12, 0, 0, DateTimeKind.Utc), lesson.CreatedAt);
+        Assert.Equal(new DateTime(2026, 9, 15, 12, 10, 0, DateTimeKind.Utc), lesson.CompletedAt);
+        Assert.Equal(26.67m, lesson.OverallScore);
+        Assert.Equal("Bài DML", lesson.LessonTitle);
+        Assert.Null(sessions[1].LessonTitle);
+        // sessionIds giữ nguyên cho client cũ.
+        Assert.Equal(2, body.ResolvedFrom.SessionIds.Count);
+    }
+
     // ── BE-1 — CreateAsync phải gửi TIÊU CHÍ NĂNG LỰC THẬT xuống AIService, không phải rỗng ──
     //
     // Đo trên production: chỉ 7% `milestone.focusCriteria` khớp tên tiêu chí thật vì AIService

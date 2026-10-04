@@ -200,7 +200,8 @@ public class RoadmapService : IRoadmapService
             if (chosen.Count > 0)
                 roadmapLevel = chosen.Select(s => Enum.Parse<RoadmapLevel>(s.Seniority)).Max();
 
-            // Newest-first: tiêu chí xuất hiện lần đầu (buổi mới nhất) thắng → baseline = % hiện tại.
+            // Mốc ban đầu = TRUNG BÌNH các buổi đã chọn (RoadmapBaselineRule — quyết định sản phẩm
+            // 2026-10-04; trước đó buổi mới nhất thắng). Weakness mang CÙNG con số đó.
             //
             // MIS1-B4 — `CriterionIds` KHÔNG thể lấy theo cùng luật "chỉ buổi mới nhất": rubric_criteria
             // có Version + custom-per-candidate (BC16), nên "cùng một TÊN tiêu chí" ở hai buổi khác
@@ -212,24 +213,18 @@ public class RoadmapService : IRoadmapService
             var withScores = chosen.Where(s => s.CriterionScores.Count > 0).ToList();
             if (withScores.Count > 0)
             {
-                baseline = new Dictionary<string, decimal>();
                 var criterionIdsByName = new Dictionary<string, HashSet<Guid>>(StringComparer.Ordinal);
                 var weakNamesInOrder = new List<string>();
                 var weakNamesSeen = new HashSet<string>(StringComparer.Ordinal);
                 // REC1-B1 — đếm SỐ BUỔI (trong withScores) mà tiêu chí này bị NeedsImprovement, trên
                 // MỌI buổi — cùng nguồn dữ liệu quyết định CÓ CHỌN tiêu chí vào weaknesses hay không
-                // (xem nhánh if ngay dưới, tách khỏi guard first-seen của baseline).
+                // (xem nhánh if ngay dưới).
                 var weakCountByName = new Dictionary<string, int>(StringComparer.Ordinal);
 
-                // Lượt 1 — gom SONG SONG, NHƯNG hai việc KHÔNG còn cùng một guard nữa:
-                //   • baseline[name]   — first-seen THẮNG (buổi MỚI NHẤT trong vòng lặp newest-first
-                //                        này) → vẫn là "% hiện tại", giữ nguyên luật cũ.
-                //   • weak/weakCount   — CHẠY TRÊN MỌI buổi, không bị chặn bởi baseline đã có hay
-                //                        chưa. REC1-B1: trước bản vá, `continue` ở dưới chặn LUÔN cả
-                //                        việc đọc NeedsImprovement của mọi buổi CŨ HƠN buổi đã set
-                //                        baseline ⇒ tiêu chí yếu 3 buổi trước mà buổi mới nhất ổn
-                //                        KHÔNG BAO GIỜ vào lộ trình — không lỗi, không cảnh báo.
-                // CriterionIds vẫn gom từ MỌI buổi như cũ (không đổi).
+                // Lượt 1 — weak/weakCount + CriterionIds gom trên MỌI buổi. REC1-B1: trước bản vá đó,
+                // `continue` của luật baseline first-seen chặn LUÔN việc đọc NeedsImprovement của mọi
+                // buổi CŨ HƠN ⇒ tiêu chí yếu 3 buổi trước mà buổi mới nhất ổn KHÔNG BAO GIỜ vào lộ
+                // trình. Baseline nay tính RIÊNG bên dưới (trung bình) nên không còn guard nào chung.
                 foreach (var s in withScores)
                     foreach (var cs in s.CriterionScores)
                     {
@@ -244,16 +239,14 @@ public class RoadmapService : IRoadmapService
                             if (weakNamesSeen.Add(cs.CriterionName))
                                 weakNamesInOrder.Add(cs.CriterionName);
                         }
-
-                        if (baseline.ContainsKey(cs.CriterionName)) continue;
-                        baseline[cs.CriterionName] = cs.Percentage;
                     }
 
+                baseline = RoadmapBaselineRule.Average(withScores.SelectMany(s => s.CriterionScores
+                    .Select(cs => new RoadmapBaselineRule.Row(s.Id, cs.CriterionName, cs.Percentage))));
+
                 // Lượt 2 — dựng RoadmapWeakness (bất biến) từ các dict đã gom XONG ở lượt 1.
-                // `baseline[name]` LUÔN có giá trị cho mọi name trong weakNamesInOrder: lần đầu gặp
-                // một tên (dù có NeedsImprovement hay không) đều rơi xuống nhánh set-baseline ngay
-                // trong cùng vòng lặp phía trên — không có đường nào một tên vào được weakNamesInOrder
-                // mà baseline chưa từng thấy nó.
+                // `baseline[name]` LUÔN có giá trị cho mọi name trong weakNamesInOrder: baseline gom từ
+                // CÙNG tập dòng điểm (withScores) mà weakNamesInOrder đọc, nên mọi tên yếu đều có mốc.
                 // TotalSessions = withScores.Count CỐ ĐỊNH cho mọi mục — cỡ mẫu của CẢ lộ trình,
                 // không phải "số buổi tiêu chí này từng xuất hiện" (khác WeakSessions, vốn LÀ theo
                 // từng tiêu chí).
@@ -456,7 +449,8 @@ public class RoadmapService : IRoadmapService
             roadmap.Milestones.Count, sourceSessionIds?.Count ?? 0);
 
         // Roadmap vừa tạo — chưa bài nào được làm, nên rỗng là ĐÚNG do cấu trúc (không phải bỏ sót).
-        return Map(roadmap, includeTheory: true, attemptCounts: EmptyAttemptCounts, scope: scope);
+        return Map(roadmap, includeTheory: true, attemptCounts: EmptyAttemptCounts,
+            sources: await LoadSourceSessionsAsync(roadmap, ct), scope: scope);
     }
 
     // RAG grounding (Cách 2) — precompute snapshot cho MỌI lesson trong roadmap. 1 lần /embed cho tất cả
@@ -556,7 +550,8 @@ public class RoadmapService : IRoadmapService
         r.Name = name;
         await _db.SaveChangesAsync(ct);
 
-        return Map(r, includeTheory: false, await LoadAttemptCountsAsync(id, ct));
+        return Map(r, includeTheory: false, await LoadAttemptCountsAsync(id, ct),
+            await LoadSourceSessionsAsync(r, ct));
     }
 
     public async Task<RoadmapResponse?> GetAsync(
@@ -570,7 +565,8 @@ public class RoadmapService : IRoadmapService
         if (r.CandidateId != candidateId)
             throw new UnauthorizedAccessException("Không phải roadmap của bạn");   // 403
 
-        return Map(r, includeTheory: true, await LoadAttemptCountsAsync(id, ct));
+        return Map(r, includeTheory: true, await LoadAttemptCountsAsync(id, ct),
+            await LoadSourceSessionsAsync(r, ct));
     }
 
     /// <summary>
@@ -857,14 +853,50 @@ public class RoadmapService : IRoadmapService
             .Select(g => new { LessonId = g.Key, Count = g.Count() })
             .ToDictionaryAsync(x => x.LessonId, x => x.Count, ct);
 
+    // Các buổi nguồn (mốc ban đầu) kèm ngày/điểm/tên bài — cho `resolvedFrom.sessions`. Owner-scoped
+    // (phòng thủ: id đã qua guard sở hữu lúc tạo). Tên bài tra theo `roadmap_lesson_attempts` của MỌI
+    // lộ trình (buổi nguồn thường là bài của lộ trình trước), dự phòng `roadmap_lessons.session_id`.
+    private async Task<IReadOnlyList<RoadmapSourceSessionResponse>> LoadSourceSessionsAsync(
+        Roadmap r, CancellationToken ct)
+    {
+        if (r.SourceSessionIds is not { Count: > 0 } ids) return [];
+
+        var sessions = await _db.PracticeSessions.AsNoTracking()
+            .Where(s => ids.Contains(s.Id) && s.CandidateId == r.CandidateId)
+            .Select(s => new { s.Id, s.CreatedAt, s.CompletedAt, s.OverallScore })
+            .ToListAsync(ct);
+        if (sessions.Count == 0) return [];
+
+        var found = sessions.Select(s => s.Id).ToList();
+        var titles = await _db.RoadmapLessonAttempts.AsNoTracking()
+            .Where(a => found.Contains(a.SessionId))
+            .Select(a => new { a.SessionId, a.Lesson.Title })
+            .ToListAsync(ct);
+        var lessonTitles = await _db.RoadmapLessons.AsNoTracking()
+            .Where(l => l.SessionId != null && found.Contains(l.SessionId.Value))
+            .Select(l => new { SessionId = l.SessionId!.Value, l.Title })
+            .ToListAsync(ct);
+        var titleBySession = titles.Concat(lessonTitles)
+            .GroupBy(x => x.SessionId)
+            .ToDictionary(g => g.Key, g => g.First().Title);
+
+        return sessions
+            .OrderBy(s => s.CreatedAt).ThenBy(s => s.Id)
+            .Select(s => new RoadmapSourceSessionResponse(
+                s.Id, s.CreatedAt, s.CompletedAt, s.OverallScore,
+                titleBySession.TryGetValue(s.Id, out var t) ? t : null))
+            .ToList();
+    }
+
     /// <summary>
     /// <paramref name="attemptCounts"/> = số lần đã làm, theo lessonId. THAM SỐ BẮT BUỘC (không có
     /// giá trị mặc định) là có chủ đích: một call site mới quên nạp sẽ phải TỰ QUYẾT truyền gì, thay
-    /// vì âm thầm nhận 0 và nói dối FE là bài chưa từng được làm.
+    /// vì âm thầm nhận 0 và nói dối FE là bài chưa từng được làm. <paramref name="sources"/> cũng bắt
+    /// buộc vì cùng lý do — quên nạp là FE lại in "ngày phiên luyện chưa có".
     /// </summary>
     private static RoadmapResponse Map(
         Roadmap r, bool includeTheory, IReadOnlyDictionary<Guid, int> attemptCounts,
-        string? scope = null) => new(
+        IReadOnlyList<RoadmapSourceSessionResponse> sources, string? scope = null) => new(
         r.Id,
         RoadmapNaming.Resolve(r.Name, r.JobCategory, r.Level, r.Language, r.CreatedAt),
         r.JobCategory.ToString(),
@@ -923,7 +955,8 @@ public class RoadmapService : IRoadmapService
         new RoadmapResolvedFromResponse(
             r.SourceSessionIds ?? [],
             r.Baseline is not null,
-            scope));
+            scope,
+            sources));
 }
 
 // UX3-B2 — hàng SQL của GET /roadmaps: các cột chiếu xuống Postgres rồi RoadmapNaming.Resolve /

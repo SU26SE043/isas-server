@@ -3,6 +3,7 @@ using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
 using Isas.InterviewService.Services;
 using Isas.InterviewService.Services.Interfaces;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
@@ -138,18 +139,22 @@ public class RoadmapWeaknessRepeatCountRec1B1Tests
         Assert.Equal(2, clarity.TotalSessions);
     }
 
-    // ═══════════ Test 2 — baseline VẪN là điểm buổi mới nhất, KHÔNG thành trung bình ═══════════
+    // ═══════════ Test 2 — baseline = TRUNG BÌNH các buổi đã chọn ═══════════
+    // ĐẢO TIỀN ĐỀ 2026-10-04 (quyết định sản phẩm): bản cũ khoá "baseline là buổi MỚI NHẤT, KHÔNG
+    // thành trung bình". Đo trên prod: một buổi gần như bỏ trống làm mốc 5/6 tiêu chí về 0% trong khi
+    // buổi trước được 20% ⇒ chặng đầu báo +44% chỉ vì đúng một buổi tệ. Mốc nay là trung bình các buổi
+    // người dùng đã chọn (RoadmapBaselineRule); weakness mang cùng con số.
 
     [Fact]
-    public async Task Create_Baseline_VanLaDiemBuoiMoiNhat_KhongThanhTrungBinh()
+    public async Task Create_Baseline_LaTrungBinhCacBuoiDaChon_KhongPhaiBuoiMoiNhat()
     {
         using var t = new TestDb();
         var candidateId = Guid.NewGuid();
         var crit = TestDb.Criterion(JobCategory.BE, name: "Clarity");
         var now = DateTime.UtcNow;
 
-        // Buổi CŨ: 10% (yếu). Buổi MỚI NHẤT: 80% (ổn). Trung bình = 45% — nếu baseline lỡ bị đổi
-        // thành trung bình (hoặc thành giá trị buổi CŨ NHẤT), test này phải bắt được ngay.
+        // Buổi CŨ: 10% (yếu). Buổi MỚI NHẤT: 80% (ổn). Trung bình = 45% — nếu baseline lỡ quay về
+        // buổi mới nhất (80) hoặc buổi cũ nhất (10), test này phải bắt được ngay.
         var oldSid = AddSession(t, candidateId, crit, pct: 10, needsImprovement: true, createdAt: now.AddDays(-3));
         var newSid = AddSession(t, candidateId, crit, pct: 80, needsImprovement: false, createdAt: now);
         await t.Db.SaveChangesAsync();
@@ -164,6 +169,9 @@ public class RoadmapWeaknessRepeatCountRec1B1Tests
             default);
 
         var clarity = Assert.Single(captured()!, w => w.CriterionName == "Clarity");
-        Assert.Equal(80m, clarity.Percentage);
+        Assert.Equal(45m, clarity.Percentage);
+
+        var row = await t.Db.Roadmaps.AsNoTracking().SingleAsync(r => r.CandidateId == candidateId);
+        Assert.Equal(45m, row.Baseline!["Clarity"]);
     }
 }

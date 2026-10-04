@@ -214,7 +214,25 @@ public record MilestoneResponse(
 public record RoadmapResolvedFromResponse(
     IReadOnlyList<Guid> SessionIds,
     bool BaselineAvailable,
-    string? Scope
+    string? Scope,
+    // Additive (2026-10-04) — CÙNG các buổi trong `SessionIds` nhưng kèm ngày/điểm/tên bài để client
+    // hiện được "lộ trình dựa trên buổi nào". Trước đó chỉ có id trần ⇒ FE in "Ngày phiên luyện chưa
+    // có" cho mọi ô dù buổi có ngày thật. GIỮ `SessionIds` (client cũ đọc nó). Buổi không còn đọc
+    // được (không thuộc chủ lộ trình) thì vắng ở đây — đừng suy "buổi bị xoá" từ việc lệch số đếm.
+    IReadOnlyList<RoadmapSourceSessionResponse>? Sessions = null
+);
+
+/// <summary>Một buổi luyện được chọn làm nguồn (mốc ban đầu) của lộ trình.</summary>
+/// <param name="LessonTitle">
+/// Tên bài nếu buổi là một bài của lộ trình (kể cả lộ trình KHÁC); <c>null</c> = buổi luyện tự do.
+/// </param>
+/// <param name="OverallScore">Điểm tổng của buổi như màn kết quả buổi hiển thị (đã gồm phạt bỏ câu).</param>
+public record RoadmapSourceSessionResponse(
+    Guid Id,
+    DateTime CreatedAt,
+    DateTime? CompletedAt,
+    decimal? OverallScore,
+    string? LessonTitle
 );
 
 public record RoadmapResponse(

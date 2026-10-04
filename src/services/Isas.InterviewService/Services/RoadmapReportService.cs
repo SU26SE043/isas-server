@@ -17,7 +17,8 @@ namespace Isas.InterviewService.Services;
 //   • levelEvaluation: passed = pct ≥ ngưỡng level — ngưỡng lấy từ roadmap_level_thresholds (admin
 //     chỉnh runtime), chưa ai chỉnh thì rơi về mặc định RoadmapOptions (Fresher 50 · Junior 60 ·
 //     Middle 70 · Senior 80). Ngưỡng CHỐT lúc build → vào snapshot, KHÔNG hồi tố report đã đóng.
-//   • Kết luận (strengths/weaknesses/improvements + overallComment): AIService /summarize-roadmap best-effort.
+//   • Kết luận: strengths/weaknesses/improvements THEO LUẬT luôn có (BuildRuleConclusions); khi chốt
+//     lộ trình AIService /summarize-roadmap ghi đè + viết overallComment (best-effort).
 // Final report snapshot vào roadmaps.final_report; interim tính on-read (không lưu).
 public class RoadmapReportService : IRoadmapReportService
 {
@@ -332,12 +333,15 @@ public class RoadmapReportService : IRoadmapReportService
                 c.Name, c.Percentage, threshold, c.Percentage >= threshold))
             .ToList();
 
-        IReadOnlyList<string> strengths = [];
-        IReadOnlyList<string> weaknesses = [];
-        IReadOnlyList<string> improvements = [];
+        // Kết luận THEO LUẬT từ chính số liệu radar/ngưỡng/mốc của báo cáo — luôn có, kể cả khi lộ trình
+        // còn dở. Trước 2026-10-04 ba ô này CHỈ có khi lộ trình hoàn tất (lời gọi AI bên dưới), mà đo
+        // trên prod 0/39 lộ trình từng hoàn tất ⇒ chưa người dùng nào thấy chúng có nội dung, còn FE in
+        // "chưa đủ dữ liệu" trong khi dữ liệu có đủ. AI thành công thì GHI ĐÈ bằng kết luận của nó; AI
+        // lỗi lúc chốt thì snapshot giữ bản theo luật thay vì rỗng vĩnh viễn.
+        var (strengths, weaknesses, improvements) = BuildRuleConclusions(radar, threshold, roadmap.Baseline);
         string? overallComment = null;
 
-        // Kết luận chi tiết chỉ khi build final (Completed). Best-effort: AI lỗi → để rỗng/null, roadmap vẫn Completed.
+        // Kết luận AI chỉ khi build final (Completed). Best-effort: AI lỗi → giữ bản theo luật, roadmap vẫn Completed.
         if (withAiConclusion && radar.Count > 0)
         {
             try
@@ -357,9 +361,7 @@ public class RoadmapReportService : IRoadmapReportService
                 // trông như tiến bộ vượt bậc — cả hai đều bịa, và cái sau bịa theo hướng khen.
                 var progress = radar.Select(c => new RoadmapCriteriaProgress(
                     c.Name,
-                    roadmap.Baseline is not null && roadmap.Baseline.TryGetValue(c.Name, out var bp)
-                        ? bp
-                        : c.StartPercentage,
+                    StartPercentageFor(c, roadmap.Baseline),
                     c.Percentage,
                     threshold,
                     c.Percentage >= threshold)).ToList();
@@ -381,6 +383,56 @@ public class RoadmapReportService : IRoadmapReportService
         return new RoadmapReportResponse(
             radar, levelEval, strengths, weaknesses, improvements, overallComment,
             roadmap.Status.ToString(), sessionProgress);
+    }
+
+    // Mốc xuất phát của một tiêu chí, theo THỨ TỰ ƯU TIÊN (đừng đảo — lý do ở chỗ gọi trong
+    // BuildReportAsync): ① mốc ban đầu lúc tạo lộ trình; ② % buổi ĐẦU TIÊN trong lộ trình; ③ null.
+    // Dùng CHUNG cho dữ liệu gửi AI và kết luận theo luật ⇒ hai bên so cùng một mốc.
+    private static decimal? StartPercentageFor(
+        RoadmapRadarCriterionResponse c, IReadOnlyDictionary<string, decimal>? baseline) =>
+        baseline is not null && baseline.TryGetValue(c.Name, out var bp) ? bp : c.StartPercentage;
+
+    /// <summary>
+    /// Ba ô kết luận theo LUẬT, từ đúng các con số báo cáo đang hiện (cùng đầu vào với prompt
+    /// <c>/summarize-roadmap</c>, nên không mâu thuẫn được với radar/đánh giá cấp độ ngay phía trên):
+    /// <list type="bullet">
+    /// <item><b>Điểm mạnh</b> = tiêu chí ĐẠT ngưỡng cấp độ, cao trước.</item>
+    /// <item><b>Điểm yếu</b> = tiêu chí CHƯA đạt ngưỡng, thấp trước.</item>
+    /// <item><b>Đã tiến bộ</b> = điểm gần đây CAO HƠN mốc xuất phát (<see cref="StartPercentageFor"/>),
+    /// tăng nhiều trước. Không có mốc → không xét (KHÔNG coi như tăng từ 0 — đó là bịa theo hướng
+    /// khen).</item>
+    /// </list>
+    /// Chuỗi trung tính ngôn ngữ (tên tiêu chí đã theo ngôn ngữ lộ trình + số + ký hiệu), số in bằng
+    /// InvariantCulture để không đổi theo locale máy chủ.
+    /// </summary>
+    internal static (IReadOnlyList<string> Strengths, IReadOnlyList<string> Weaknesses, IReadOnlyList<string> Improvements)
+        BuildRuleConclusions(
+            IReadOnlyList<RoadmapRadarCriterionResponse> radar, decimal threshold,
+            IReadOnlyDictionary<string, decimal>? baseline)
+    {
+        static string Pct(decimal v) => v.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+
+        var strengths = radar
+            .Where(c => c.Percentage >= threshold)
+            .OrderByDescending(c => c.Percentage).ThenBy(c => c.Name, StringComparer.Ordinal)
+            .Select(c => $"{c.Name} ({Pct(c.Percentage)}%)")
+            .ToList();
+
+        var weaknesses = radar
+            .Where(c => c.Percentage < threshold)
+            .OrderBy(c => c.Percentage).ThenBy(c => c.Name, StringComparer.Ordinal)
+            .Select(c => $"{c.Name} ({Pct(c.Percentage)}%)")
+            .ToList();
+
+        var improvements = radar
+            .Select(c => (c.Name, Start: StartPercentageFor(c, baseline), Current: c.Percentage))
+            .Where(x => x.Start is not null && x.Current > x.Start.Value)
+            .Select(x => (x.Name, Start: x.Start!.Value, x.Current, Delta: Math.Round(x.Current - x.Start!.Value, 2)))
+            .OrderByDescending(x => x.Delta).ThenBy(x => x.Name, StringComparer.Ordinal)
+            .Select(x => $"{x.Name}: {Pct(x.Start)}% → {Pct(x.Current)}% (+{Pct(x.Delta)})")
+            .ToList();
+
+        return (strengths, weaknesses, improvements);
     }
 
     // Improvement mile N = avg% mile N − reference; reference = mile N−1 (nếu có điểm) else baseline;
@@ -438,12 +490,15 @@ public class RoadmapReportService : IRoadmapReportService
             ? MilestoneScoreReference.PreviousMilestone
             : reference is { Count: > 0 } ? MilestoneScoreReference.Baseline : MilestoneScoreReference.None;
 
-        // Buổi của mốc CHỈ có khi mốc là chặng liền trước. `baseline` là một snapshot số đo lúc lập
-        // lộ trình, không có buổi nào đứng sau nó ⇒ rỗng (không phải null — "không có buổi nào", chứ
-        // không phải "không biết").
-        var referenceSessions = referenceBreakdown?
-            .ToDictionary(c => c.Name, c => c.CurrentSessions)
-            ?? [];
+        // Buổi của mốc: chặng liền trước → các buổi của chặng đó; mốc ban đầu → các buổi nguồn đã
+        // chọn lúc tạo lộ trình (`source_session_ids`). Trước bản 2026-10-04 nhánh baseline trả RỖNG
+        // với lập luận "baseline không có buổi nào đứng sau" — sai: nó có, và FE in "Chưa có buổi nào
+        // được chấm" ngay cạnh con số mốc 60%.
+        var referenceSessions = referenceBreakdown is not null
+            ? referenceBreakdown.ToDictionary(c => c.Name, c => c.CurrentSessions)
+            : comparedWith == MilestoneScoreReference.Baseline
+                ? await LoadBaselineSourcesAsync(roadmap, ct)
+                : [];
 
         // MỘT vòng lặp sinh ra CẢ delta lên tiêu đề LẪN phần tính — đây là chỗ khiến hai bên không
         // thể lệch nhau do cấu trúc.
@@ -474,6 +529,94 @@ public class RoadmapReportService : IRoadmapReportService
         return (
             improvement.Count > 0 ? improvement : null,
             new MilestoneScoreSnapshot(comparedWith, comparedWithTitle, criteria));
+    }
+
+    /// <summary>
+    /// Các buổi đứng sau mốc ban đầu của từng tiêu chí, đọc lại từ <c>source_session_ids</c>.
+    ///
+    /// <para><b>Chỉ liệt kê khi danh sách cộng ra ĐÚNG con số mốc đã lưu</b> — bất biến "phần tính cộng
+    /// ra con số" của <see cref="MilestoneScoreSnapshot"/>. Mốc là snapshot chốt lúc tạo lộ trình, và
+    /// lộ trình tạo trước 2026-10-04 dùng luật CŨ (buổi mới nhất thắng), không có con dấu nào nói luật
+    /// nào. Nên đối chiếu theo thứ tự:</para>
+    /// <list type="number">
+    /// <item>trung bình mọi buổi nguồn (<see cref="RoadmapBaselineRule"/>) == mốc → liệt kê tất cả;</item>
+    /// <item>buổi MỚI NHẤT (theo lúc tạo buổi — đúng khoá sắp của luật cũ) == mốc → chỉ buổi đó;</item>
+    /// <item>không khớp cách nào → không liệt kê (KHÔNG BIẾT, BK23) — thà trống còn hơn liệt kê một
+    /// danh sách không cộng ra con số đang hiện.</item>
+    /// </list>
+    /// </summary>
+    private async Task<Dictionary<string, List<MilestoneScoreSessionSnapshot>>> LoadBaselineSourcesAsync(
+        Roadmap roadmap, CancellationToken ct)
+    {
+        var result = new Dictionary<string, List<MilestoneScoreSessionSnapshot>>(StringComparer.Ordinal);
+        if (roadmap.Baseline is not { Count: > 0 } baseline
+            || roadmap.SourceSessionIds is not { Count: > 0 } ids)
+            return result;
+
+        // Owner-scoped (phòng thủ — id đã qua guard sở hữu lúc tạo lộ trình).
+        var createdAtBySession = await _db.PracticeSessions.AsNoTracking()
+            .Where(s => ids.Contains(s.Id) && s.CandidateId == roadmap.CandidateId)
+            .ToDictionaryAsync(s => s.Id, s => s.CreatedAt, ct);
+        if (createdAtBySession.Count == 0) return result;
+
+        var owned = createdAtBySession.Keys.ToList();
+        var scores = await _db.SessionCriterionScores.AsNoTracking()
+            .Where(sc => owned.Contains(sc.SessionId))
+            .Select(sc => new { sc.SessionId, sc.CriterionName, sc.Percentage, sc.CreatedAt })
+            .ToListAsync(ct);
+        if (scores.Count == 0) return result;
+
+        // Buổi nguồn thường là bài của một lộ trình KHÁC → tên bài + lần làm tra theo mọi lộ trình.
+        var attempts = await _db.RoadmapLessonAttempts.AsNoTracking()
+            .Where(a => owned.Contains(a.SessionId))
+            .Select(a => new { a.SessionId, a.AttemptNo, a.Lesson.Title })
+            .ToListAsync(ct);
+        var lessonTitles = await _db.RoadmapLessons.AsNoTracking()
+            .Where(l => l.SessionId != null && owned.Contains(l.SessionId.Value))
+            .Select(l => new { SessionId = l.SessionId!.Value, l.Title })
+            .ToListAsync(ct);
+        var titleBySession = attempts.Select(a => new { a.SessionId, a.Title })
+            .Concat(lessonTitles)
+            .GroupBy(x => x.SessionId)
+            .ToDictionary(g => g.Key, g => g.First().Title);
+        var attemptNoBySession = attempts
+            .GroupBy(a => a.SessionId)
+            .ToDictionary(g => g.Key, g => g.First().AttemptNo);
+        var scoredAtBySession = scores
+            .GroupBy(sc => sc.SessionId)
+            .ToDictionary(g => g.Key, g => g.Max(sc => sc.CreatedAt));
+
+        var perSession = RoadmapBaselineRule.PerSession(scores
+            .Select(sc => new RoadmapBaselineRule.Row(sc.SessionId, sc.CriterionName, sc.Percentage)));
+
+        foreach (var (name, stored) in baseline)
+        {
+            if (!perSession.TryGetValue(name, out var bySession) || bySession.Count == 0) continue;
+
+            List<Guid>? matched = null;
+            if (RoadmapBaselineRule.Average(bySession.Values) == stored)
+                matched = bySession.Keys.ToList();
+            else
+            {
+                var newest = bySession.Keys
+                    .OrderByDescending(id => createdAtBySession[id]).ThenByDescending(id => id)
+                    .First();
+                if (bySession[newest] == stored) matched = [newest];
+            }
+            if (matched is null) continue;
+
+            result[name] = matched
+                .Select(id => new MilestoneScoreSessionSnapshot(
+                    id,
+                    titleBySession.TryGetValue(id, out var title) ? title : string.Empty,
+                    attemptNoBySession.TryGetValue(id, out var no) ? no : null,
+                    bySession[id],
+                    scoredAtBySession[id]))
+                .OrderBy(x => x.ScoredAt).ThenBy(x => x.SessionId)
+                .ToList();
+        }
+
+        return result;
     }
 
     /// <summary>

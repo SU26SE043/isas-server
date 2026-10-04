@@ -351,7 +351,10 @@ public class RoadmapReportTests
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
-    // ── (3) AI /summarize-roadmap throw → roadmap vẫn Completed, comment null, kết luận rỗng ──
+    // ── (3) AI /summarize-roadmap throw → roadmap vẫn Completed, comment null, kết luận THEO LUẬT ──
+    // ĐẢO TIỀN ĐỀ 2026-10-04: bản cũ khoá "AI lỗi ⇒ 3 ô rỗng vĩnh viễn trong snapshot". Nay ba ô có
+    // bản theo luật (BuildRuleConclusions) TRƯỚC khi gọi AI; AI lỗi thì snapshot giữ bản đó thay vì
+    // rỗng. overallComment vẫn null — luật không viết nhận xét thay AI.
     [Fact]
     public async Task RoadmapCompletion_AiThrows_StillCompleted_CommentNull()
     {
@@ -375,13 +378,16 @@ public class RoadmapReportTests
 
         var report = JsonSerializer.Deserialize<RoadmapReportResponse>(roadmap.FinalReport!, Json)!;
         Assert.Single(report.Radar);   // radar vẫn tính (không phụ thuộc AI)
-        Assert.Empty(report.Strengths);
+        Assert.Equal(["Clarity (90%)"], report.Strengths);              // 90 ≥ ngưỡng Junior 60
         Assert.Empty(report.Weaknesses);
-        Assert.Empty(report.Improvements);
+        Assert.Equal(["Clarity: 50% → 90% (+40)"], report.Improvements); // so mốc ban đầu 50
         Assert.Null(report.OverallComment);
     }
 
-    // ── (4a) GET report Active → interim (radar + levelEvaluation; kết luận rỗng; KHÔNG gọi AI) ──
+    // ── (4a) GET report Active → interim (radar + levelEvaluation + kết luận THEO LUẬT; KHÔNG gọi AI) ──
+    // ĐẢO TIỀN ĐỀ 2026-10-04: bản cũ khoá `Strengths` rỗng khi lộ trình còn dở — prod 0/39 lộ trình
+    // từng hoàn tất nên chưa người dùng nào thấy ba ô có nội dung. Vẫn KHÔNG gọi AI (tốn tiền mỗi lần
+    // mở trang); ba ô tính từ chính radar/ngưỡng của báo cáo.
     [Fact]
     public async Task GetReport_Active_ReturnsInterim_NoAiCall()
     {
@@ -403,7 +409,11 @@ public class RoadmapReportTests
         Assert.Equal(70m, report.Radar.First(c => c.Name == "Clarity").Percentage);
         Assert.True(report.LevelEvaluation.First(e => e.CriterionName == "Clarity").Passed);   // 70 ≥ 60
         Assert.False(report.LevelEvaluation.First(e => e.CriterionName == "Depth").Passed);    // 30 < 60
-        Assert.Empty(report.Strengths);
+        Assert.Equal(["Clarity (70%)"], report.Strengths);
+        Assert.Equal(["Depth (30%)"], report.Weaknesses);
+        // Không có mốc ban đầu + mới 1 buổi ⇒ không tiêu chí nào có mốc xuất phát ⇒ KHÔNG coi là tăng
+        // từ 0 (đó là bịa theo hướng khen).
+        Assert.Empty(report.Improvements);
         Assert.Null(report.OverallComment);
 
         // interim KHÔNG gọi AI.
