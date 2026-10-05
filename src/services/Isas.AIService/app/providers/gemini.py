@@ -429,6 +429,68 @@ def _question_text(item) -> str:
     return str(item.get("text", "") if isinstance(item, dict) else item).strip()
 
 
+def _score_response_schema(criterion_ids: list[str]) -> dict:
+    """Schema của ``scores`` trong lượt chấm: MỘT khoá bắt buộc cho MỖI tiêu chí được gửi vào (BK43).
+
+    Trước bản này ``scores`` là một MẢNG tự do ⇒ trả thiếu phần tử vẫn khớp schema, và guard
+    "thiếu tiêu chí" ở :meth:`GeminiProvider.score` chỉ bắt được SAU KHI đã trả tiền lượt gọi, rồi
+    đánh hỏng CẢ câu trả lời (``Failed`` ⇒ người luyện mất câu đã tính credit, PAY-13; buổi B2B mất
+    câu đó khỏi bài thi). Đo log worker prod 3 ngày tới 2026-10-05: 5 câu trả lời dính, 7 lần thiếu,
+    trong đó 5 lần là tiêu chí CÁCH NÓI luôn được chấm (*Ngữ pháp & dùng từ* ×3, *Giao tiếp*,
+    *Thuật ngữ*) — tức không phải chuyện "nhãn phụ không áp dụng" như giả thuyết ban đầu. Lỗi lại
+    ngẫu nhiên theo thời điểm (phát lại đúng file ghi âm vài giờ sau thì qua) nên thử lại không cứu.
+    Object có ``required`` = đủ mọi id thì model KHÔNG CÓ CÁCH nào trả thiếu: chặn ở cấu trúc, không
+    ở lời dặn trong prompt (lời dặn "Chấm ĐỦ tất cả tiêu chí" vốn đã có và vẫn bị lờ).
+
+    ``propertyOrdering`` giữ đúng thứ tự rubric như dạng mảng cũ (model viết lần lượt từng tiêu chí
+    theo thứ tự trong prompt), để đổi HÌNH DẠNG output không kéo theo đổi thứ tự suy luận.
+
+    Danh sách rỗng ⇒ giữ dạng MẢNG cũ: object không có thuộc tính nào là schema Gemini có thể từ
+    chối bằng 400 — lỗi API chứ không phải ``ValueError`` ⇒ worker coi là lỗi tạm thời, đẩy lại mãi.
+    Giữ mảng thì ca này hỏng y như trước (``ValueError`` ⇒ ``Failed``), không đẻ ra vòng lặp mới.
+    """
+    item = {
+        "type": "object",
+        "properties": {
+            "score": {"type": "number"},
+            "levelMatched": {"type": "integer"},
+            "reasoning": {"type": "string"},
+        },
+        "required": ["score", "levelMatched", "reasoning"],
+    }
+    if not criterion_ids:
+        return {
+            "type": "array",
+            "items": {
+                **item,
+                "properties": {"criterionId": {"type": "string"}, **item["properties"]},
+                "required": ["criterionId", *item["required"]],
+            },
+        }
+    return {
+        "type": "object",
+        "properties": {cid: item for cid in criterion_ids},
+        "required": list(criterion_ids),
+        "propertyOrdering": list(criterion_ids),
+    }
+
+
+def _score_items(raw) -> list[dict]:
+    """Đưa ``scores`` model trả về thành list ``{criterionId, score, levelMatched, reasoning}``.
+
+    Nhận CẢ HAI hình dạng (mẫu :func:`_question_text`): object khoá theo id — dạng schema
+    :func:`_score_response_schema` yêu cầu — và mảng cũ, vì model đôi khi lờ ``response_schema``.
+    Ở dạng object, KHOÁ là nguồn sự thật của id: model có nhét thêm ``criterionId`` khác vào bên
+    trong thì vẫn lấy khoá, vì khoá mới là thứ schema ràng buộc. Phần tử không phải object bị bỏ —
+    tiêu chí đó sẽ thiếu và guard INT-9 ở :meth:`GeminiProvider.score` báo lỗi như trước.
+    """
+    if isinstance(raw, dict):
+        return [{**v, "criterionId": k} for k, v in raw.items() if isinstance(v, dict)]
+    if isinstance(raw, list):
+        return [x for x in raw if isinstance(x, dict)]
+    return []
+
+
 # ── Lỗi Gemini TẠM THỜI vs VĨNH VIỄN (dùng ở chokepoint `_generate`) ──────────
 #
 # Danh sách TRẮNG, cố ý: mặc định là "KHÔNG thử lại". Đoán sai theo hướng thử lại một lỗi vĩnh
@@ -1930,19 +1992,8 @@ class GeminiProvider(QuestionProvider):
             response_schema={
                 "type": "object",
                 "properties": {
-                    "scores": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "criterionId": {"type": "string"},
-                                "score": {"type": "number"},
-                                "levelMatched": {"type": "integer"},
-                                "reasoning": {"type": "string"},
-                            },
-                            "required": ["criterionId", "score", "levelMatched", "reasoning"],
-                        },
-                    },
+                    # BK43 — một KHOÁ BẮT BUỘC cho mỗi tiêu chí: xem `_score_response_schema`.
+                    "scores": _score_response_schema(list(max_by_id)),
                     # F13 — câu trả lời mẫu mức tối đa cho ĐÚNG câu hỏi này.
                     # Sinh CÙNG lượt chấm: prompt đã mang câu hỏi + rubric + transcript
                     # nên chi phí tăng thêm CHỈ là output token; gọi riêng lúc user mở
@@ -1968,8 +2019,8 @@ class GeminiProvider(QuestionProvider):
         except json.JSONDecodeError:
             raise ValueError(f"LLM chấm trả về JSON không hợp lệ: {text[:200]}")
 
-        raw = data.get("scores", [])
-        if not isinstance(raw, list) or not raw:
+        raw = _score_items(data.get("scores"))
+        if not raw:
             raise ValueError("LLM không trả về điểm hợp lệ.")
 
         results: list[dict] = []
@@ -2016,7 +2067,10 @@ class GeminiProvider(QuestionProvider):
                 "reasoning": reasoning,
             })
 
-        # Đảm bảo chấm đủ mọi tiêu chí; thiếu cái nào -> coi như lỗi để retry.
+        # Đảm bảo chấm đủ mọi tiêu chí; thiếu cái nào -> coi như lỗi để retry (INT-9).
+        # BK43: schema đã ép đủ khoá nên guard này chỉ còn là lưới CUỐI cho ca model lờ schema —
+        # KHÔNG gỡ: thiếu nó thì một lượt trả thiếu lọt thẳng xuống .NET thành điểm buổi tính trên
+        # bộ tiêu chí hụt mà không ai biết.
         missing = set(max_by_id.keys()) - seen
         if missing:
             raise ValueError(f"LLM chấm thiếu tiêu chí: {missing}")
