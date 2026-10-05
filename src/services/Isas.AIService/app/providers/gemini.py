@@ -314,6 +314,70 @@ def _is_repeat_question(next_question: str, current_question: str,
                for q in asked if isinstance(q, str) and q.strip())
 
 
+class _TranscriptWordingQuestionError(ValueError):
+    """``nextQuestion`` hỏi NGHĨA của một cụm từ chép nguyên từ bản chép lời.
+
+    Ca thật trên prod (2026-10-05): bản chép "HashMap là một kiểu dữ liệu của lãnh thổng" (máy nghe
+    nhầm) ⇒ AI hỏi "Bạn có thể giải thích rõ hơn "kiểu dữ liệu của lãnh thổng" nghĩa là gì không?".
+    Ứng viên bị bắt giải thích một cụm họ chưa từng nói, và lượt đó chiếm một tầng đào sâu thật.
+
+    Luật trong prompt KHÔNG đủ: đo trên ``aiapi-dev`` với Gemini thật, cả bản luật chung lẫn bản đã
+    siết (nói rõ "cụm vô nghĩa mặc định là máy nghe nhầm" + một dòng cấm sát khối JSON) vẫn ra đúng
+    câu đó 4/4 lượt. Nên chặn bằng code, đi chung đường trả-lại của Q16/Q17.
+
+    Cạn lượt thì đóng chuỗi như câu trùng (Q17) — một câu hỏi về câu chữ máy chép sai tệ hơn không
+    hỏi gì.
+    """
+
+
+# Cặp dấu trích dẫn: "…" “…” «…» '…' ‘…’. Một cụm dài 3–120 ký tự, không vắt qua dấu trích khác.
+_QUOTED_PHRASE = re.compile(
+    "[\"\u201c\u201d\u00ab\u00bb]([^\"\u201c\u201d\u00ab\u00bb]{3,120})[\"\u201c\u201d\u00ab\u00bb]"
+    "|['\u2018\u2019]([^'\u2018\u2019]{3,120})['\u2018\u2019]")
+# Hỏi NGHĨA — đứng NGAY SAU cụm trích ("'X' nghĩa là gì?") hoặc NGAY TRƯỚC ("ý bạn là gì khi nói 'X'").
+# Cố ý chỉ xét một khung hẹp quanh cụm trích: "giải thích rõ hơn về việc 'Memo bừa bãi còn chậm hơn'
+# không?" là câu đào sâu Ý hợp lệ — nó trích lời ứng viên nhưng hỏi về NỘI DUNG, không hỏi nghĩa chữ.
+_ASKS_MEANING_AFTER = re.compile(
+    r"^\s*(?:\S+\s+){0,2}?(?:nghĩa là gì|có nghĩa là gì|có nghĩa gì|nghĩa gì|là gì|là sao"
+    r"|means?\b|mean\?)", re.IGNORECASE)
+_ASKS_MEANING_BEFORE = re.compile(
+    r"(?:ý (?:của )?bạn (?:là gì )?khi nói|bạn muốn nói|nghĩa của(?: cụm| từ)?(?: từ)?"
+    r"|what (?:do|did) you mean by|meaning of)\s*$", re.IGNORECASE)
+
+
+def _asks_meaning_of_transcript_phrase(next_question: str, transcript: str,
+                                       history: list[dict] | None) -> str | None:
+    """Câu kế có hỏi nghĩa của một cụm từ CHÉP NGUYÊN từ câu trả lời của ứng viên không?
+
+    Trả về cụm đó (để nêu trong lời trả lại), hoặc ``None``.
+
+    Hai điều kiện, phải ĐỦ CẢ HAI — mỗi cái một mình đều chặn nhầm câu hợp lệ:
+    1. cụm trong ngoặc có mặt NGUYÊN VĂN (sau chuẩn hoá nhẹ) trong một câu trả lời — trích một thuật
+       ngữ người phỏng vấn tự đưa ra ("'idempotent' là gì?") không phải lỗi bản chép;
+    2. câu hỏi hỏi NGHĨA của chính cụm đó (khung hẹp quanh dấu trích).
+    Code KHÔNG phân biệt được cụm "máy nghe nhầm" với cụm "ứng viên nói thật mà khó hiểu", nên chỉ
+    chặn dạng HỎI NGHĨA — với một câu trả lời nói, hỏi nghĩa của chính chữ họ dùng hầu như luôn là
+    hỏi về lỗi chép lời. Câu trích lời để đào sâu Ý vẫn đi qua.
+    """
+    def norm(text: str) -> str:
+        return " ".join((text or "").split()).strip(" .,;:!?").casefold()
+
+    answers = [transcript, *((turn.get("answer") or "") for turn in (history or []))]
+    haystack = [norm(a) for a in answers if isinstance(a, str) and a.strip()]
+    if not haystack:
+        return None
+    for m in _QUOTED_PHRASE.finditer(next_question or ""):
+        phrase = m.group(1) or m.group(2) or ""
+        key = norm(phrase)
+        if len(key.split()) < 2 or not any(key in h for h in haystack):
+            continue
+        after = next_question[m.end():m.end() + 40]
+        before = next_question[max(0, m.start() - 40):m.start()]
+        if _ASKS_MEANING_AFTER.search(after) or _ASKS_MEANING_BEFORE.search(before):
+            return phrase.strip()
+    return None
+
+
 def _generation_diagnostics(response) -> str:
     """Vì sao lượt sinh này hỏng — dữ liệu để CHỐT nguyên nhân Q16 bằng số thật ở lớp 3.
 
@@ -2832,6 +2896,7 @@ class GeminiProvider(QuestionProvider):
         # Q17 — lượt trùng gần nhất, giữ lại để lấy các NHÃN bằng chứng khi phải đóng chuỗi (prompt
         # yêu cầu `end` vẫn kèm targetCriterionId + trạng thái mới nhất).
         last_repeat: dict | None = None
+        last_wording: dict | None = None
 
         for _ in range(attempts):
             prompt = build_decide_next_prompt(
@@ -2861,6 +2926,18 @@ class GeminiProvider(QuestionProvider):
                         f"{result['nextQuestion']!r}. Câu này đã hỏi rồi — hỏi lại chỉ nhận lại đúng "
                         "câu trả lời cũ. Đặt MỘT câu hỏi KHÁC về nội dung, hoặc trả "
                         'action = "end" để đóng chủ đề.')
+                # Hỏi NGHĨA của một cụm chép nguyên từ bản chép — gần như luôn là chữ máy nghe nhầm.
+                wording = (_asks_meaning_of_transcript_phrase(
+                    result["nextQuestion"] or "", transcript, history)
+                    if result["action"] != "end" else None)
+                if wording:
+                    last_wording = result
+                    raise _TranscriptWordingQuestionError(
+                        f"nextQuestion đang hỏi nghĩa của cụm {wording!r} lấy từ bản chép lời: "
+                        f"{result['nextQuestion']!r}. Cụm này nhiều khả năng do máy nghe nhầm — ứng "
+                        "viên không nói như vậy. KHÔNG hỏi nghĩa của nó và KHÔNG nhắc lại nó. Đặt MỘT "
+                        "câu hỏi về NỘI DUNG mà câu hỏi hiện tại cần (cách hoạt động, lý do chọn, ví dụ "
+                        'cụ thể, kết quả), hoặc trả action = "end" nếu chủ đề đã đủ.')
                 return result
             except ValueError as e:
                 last_error = e
@@ -2882,6 +2959,14 @@ class GeminiProvider(QuestionProvider):
             return {**last_repeat, "action": "end", "nextQuestion": None,
                     "reason": "Câu hỏi kế sinh ra vẫn trùng câu đã hỏi sau khi thử lại — đóng chủ đề "
                               "tại đây thay vì hỏi lại y nguyên."}
+
+        if isinstance(last_error, _TranscriptWordingQuestionError) and last_wording is not None:
+            logger.info("Đóng chuỗi sau %d lượt vì câu kế vẫn hỏi nghĩa cụm từ trong bản chép: %r",
+                        attempts, last_wording["nextQuestion"])
+            return {**last_wording, "action": "end", "nextQuestion": None,
+                    "reason": "Câu hỏi kế sinh ra vẫn hỏi nghĩa của một cụm từ trong bản chép lời sau "
+                              "khi thử lại — đóng chủ đề tại đây thay vì hỏi ứng viên về chữ máy nghe "
+                              "nhầm."}
 
         raise last_error  # type: ignore[misc]  # attempts >= 1 ⇒ luôn đã gán
 

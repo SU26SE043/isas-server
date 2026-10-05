@@ -2449,13 +2449,13 @@ Khi trạng thái bằng chứng có mặt, phải làm thêm các việc sau:
     budget_block = "\n".join(budget_lines)
 
     if chain_mode:
-        actions_block = """- "clarify": câu trả lời chưa rõ / thiếu ý / mơ hồ → đặt 1 câu hỏi LÀM RÕ chính ý đó.
+        actions_block = """- "clarify": Ý của câu trả lời chưa rõ / thiếu / mơ hồ (KHÔNG phải vì chữ trong bản chép trông lạ) → đặt 1 câu hỏi LÀM RÕ chính ý đó.
 - "follow_up": câu trả lời mở ra hướng đáng ĐÀO SÂU → đặt 1 câu hỏi sâu/cụ thể hơn trong CÙNG chủ đề.
 - "end": chủ đề NÀY đã khai thác đủ (hoặc hết ngân sách đào sâu) → dừng chuỗi tại đây.
   LƯU Ý: "end" chỉ kết thúc CHỦ ĐỀ NÀY, KHÔNG kết thúc buổi phỏng vấn — hệ thống sẽ tự chuyển ứng viên
   sang câu gốc kế tiếp. Cứ chọn "end" khi chủ đề đã đủ, đừng cố hỏi thêm cho hết ngân sách."""
     else:
-        actions_block = """- "clarify": câu trả lời chưa rõ / thiếu ý / mơ hồ → đặt 1 câu hỏi LÀM RÕ chính ý đó.
+        actions_block = """- "clarify": Ý của câu trả lời chưa rõ / thiếu / mơ hồ (KHÔNG phải vì chữ trong bản chép trông lạ) → đặt 1 câu hỏi LÀM RÕ chính ý đó.
 - "follow_up": câu trả lời mở ra hướng đáng ĐÀO SÂU trong CÙNG năng lực → đặt 1 câu hỏi sâu/cụ thể hơn.
 - "new_question": ý hiện tại đã đủ, còn năng lực CHƯA kiểm tra và còn ngân sách → đặt 1 câu hỏi MỚI sang năng lực khác.
 - "end": đã đủ độ phủ để đánh giá, hoặc đã chạm trần số câu → KHÔNG hỏi thêm."""
@@ -2520,6 +2520,30 @@ Khi trạng thái bằng chứng có mặt, phải làm thêm các việc sau:
         " nói: đó là tín hiệu ĐÓNG LẠI, KHÔNG phải tín hiệu hỏi lại. Người không còn gì để nói thì hỏi"
         " thêm lần nữa cũng chỉ nhận lại đúng câu cũ.")
 
+    # ── KHÔNG HỎI VỀ CÂU CHỮ CỦA BẢN CHÉP ─────────────────────────────────────────────────────────
+    # Đề chấm điểm đã có luật F12 ("lỗi chính tả / phiên âm sai là lỗi của bộ nhận dạng") nhưng đề
+    # chọn câu kế thì KHÔNG — nó chỉ ghi "đã chuyển từ giọng nói sang văn bản". Ca thật trên prod
+    # (2026-10-05): ứng viên nói "BPMN", máy chép "bơm" ⇒ AI hỏi lại "bạn đã sử dụng 'bản trình hiện tại
+    # bằng bơm' thế nào"; một ca khác hỏi "'kiểu dữ liệu của lãnh thổng' nghĩa là gì". Ứng viên bị bắt
+    # giải thích một cụm từ họ chưa từng nói, và lượt clarify đó chiếm mất một tầng đào sâu thật.
+    #
+    # Ranh giới cố ý: cấm hỏi về CHỮ, không cấm hỏi về Ý. Trích lại một ý ứng viên thật sự nói để đào
+    # sâu ("vì sao memo bừa bãi đôi khi còn chậm hơn?") vẫn là câu hỏi tốt.
+    transcription_block = (
+        "BẢN CHÉP DO MÁY NHẬN GIỌNG NÓI — KHÔNG HỎI VỀ CÂU CHỮ:\n"
+        "- Câu trả lời mới nhất và các câu trả lời trong lịch sử đều do máy chuyển từ giọng nói sang chữ."
+        " Chữ sai chính tả, từ vô nghĩa, cụm từ lạ hay thuật ngữ bị phiên âm sai (vd \"cơm cơ nớn\" thay"
+        " cho \"component\", \"bơm\" thay cho \"BPMN\") là LỖI CỦA MÁY, không phải của ứng viên. Một"
+        " cụm từ không có nghĩa trong ngữ cảnh và không phải thuật ngữ có thật thì MẶC ĐỊNH là máy nghe"
+        " nhầm — đừng coi là ứng viên dùng sai từ.\n"
+        "- Gặp chỗ như vậy: đoán từ đúng theo ngữ cảnh rồi xét Ý của câu trả lời. Không đoán được thì bỏ"
+        " qua cụm đó và quyết định dựa trên phần còn lại.\n"
+        "- TUYỆT ĐỐI KHÔNG hỏi ứng viên giải thích, nhắc lại hay đánh vần một từ/cụm từ trông sai trong bản"
+        " chép, và KHÔNG chép nguyên cụm từ trông sai đó vào câu hỏi. Không hỏi về chính tả, ngữ pháp hay"
+        " cách dùng từ.\n"
+        "- \"clarify\" chỉ dùng khi Ý còn thiếu hoặc mơ hồ (nói chung chung, thiếu ví dụ, thiếu lý do,"
+        " thiếu kết quả) — KHÔNG dùng chỉ vì một chữ trông lạ.")
+
     intro = (
         f"Bạn là một interviewer chuyên nghiệp cho vị trí {role}, đang ĐÀO SÂU MỘT CHỦ ĐỀ trong buổi phỏng"
         " vấn thích ứng: các chủ đề của buổi đã được chuẩn bị sẵn, việc của bạn là khai thác cho hết chủ đề"
@@ -2566,9 +2590,12 @@ NGÂN SÁCH:
 
 {no_repeat_block}
 
+{transcription_block}
+
 YÊU CẦU:
 {rules_block}
 - Với action ≠ "end": nextQuestion là 1 câu hỏi DUY NHẤT bằng {field_lang(language)}, hỏi trực tiếp (không lời dẫn), bám năng lực ở trên và KHÔNG lặp lại câu đã hỏi.
+- nextQuestion KHÔNG được hỏi nghĩa của một từ/cụm từ trông sai trong bản chép (kiểu "'X' nghĩa là gì?", "ý bạn là gì khi nói 'X'?", "giải thích rõ hơn 'X'"). Muốn làm rõ thì hỏi về NỘI DUNG mà câu hỏi đang cần (cách hoạt động, lý do chọn, ví dụ cụ thể, kết quả).
 - nextQuestion PHẢI là câu HOÀN CHỈNH và kết thúc bằng dấu câu (thường là dấu ?). Câu bị cắt giữa chừng, hay chỉ có mấy chữ đầu rồi bỏ lửng, sẽ bị TRẢ LẠI.
 - Với action = "end": nextQuestion để trống.
 - reason: 1 câu ngắn ({field_lang(language)}) giải thích vì sao chọn hành động đó.
